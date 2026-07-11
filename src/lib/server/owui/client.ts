@@ -8,6 +8,8 @@ import type {
 	OwuiWorkspaceModel,
 	OwuiPage,
 	OwuiSession,
+	OwuiTextCompletion,
+	OwuiTextCompletionRequest,
 	StudioMediaPage,
 	StudioMediaSummary,
 	StudioMediaType,
@@ -43,6 +45,7 @@ interface RequestOptions {
 
 const OWUI_FILE_PAGE_SIZE = 50;
 const MEDIA_SCAN_LIMIT = 500;
+const TEXT_COMPLETION_MAX_CONTENT_LENGTH = 1024 * 1024;
 const MEDIA_RESPONSE_HEADERS = new Set([
 	'accept-ranges',
 	'content-disposition',
@@ -89,8 +92,8 @@ export class OwuiClient {
 		return this.user(object(payload, requestId), requestId);
 	}
 
-	async listModels(): Promise<OwuiModel[]> {
-		const { payload, requestId } = await this.request('api/models');
+	async listModels(signal?: AbortSignal): Promise<OwuiModel[]> {
+		const { payload, requestId } = await this.request('api/models', { signal });
 		return array(object(payload, requestId).data, requestId).map((entry) => {
 			const model = object(entry, requestId);
 			const info = this.optionalObject(model.info);
@@ -110,10 +113,12 @@ export class OwuiClient {
 		});
 	}
 
-	async listWorkspaceModels(): Promise<OwuiWorkspaceModel[]> {
+	async listWorkspaceModels(signal?: AbortSignal): Promise<OwuiWorkspaceModel[]> {
 		const items: OwuiWorkspaceModel[] = [];
 		for (let page = 1; ; page += 1) {
-			const { payload, requestId } = await this.request(`api/v1/models/list?page=${page}`);
+			const { payload, requestId } = await this.request(`api/v1/models/list?page=${page}`, {
+				signal
+			});
 			const root = object(payload, requestId);
 			for (const entry of array(root.items, requestId)) {
 				const model = object(entry, requestId);
@@ -137,8 +142,8 @@ export class OwuiClient {
 		}
 	}
 
-	async listFunctions(): Promise<OwuiFunction[]> {
-		const { payload, requestId } = await this.request('api/v1/functions/');
+	async listFunctions(signal?: AbortSignal): Promise<OwuiFunction[]> {
+		const { payload, requestId } = await this.request('api/v1/functions/', { signal });
 		return array(payload, requestId).map((entry) => {
 			const fn = object(entry, requestId);
 			return { id: string(fn.id, requestId), isActive: fn.is_active === true };
@@ -339,6 +344,68 @@ export class OwuiClient {
 		};
 	}
 
+	async completeText(input: OwuiTextCompletionRequest): Promise<OwuiTextCompletion> {
+		if (
+			!input.modelId ||
+			input.modelId.trim() !== input.modelId ||
+			input.modelId.length > 256 ||
+			input.modelId.includes('://')
+		)
+			throw new TypeError('modelId must be a valid opaque model identifier');
+		if (!input.prompt.trim() || input.prompt.length > 32 * 1024)
+			throw new TypeError('prompt must contain 1-32768 characters');
+		if (
+			input.temperature !== undefined &&
+			(!Number.isFinite(input.temperature) || input.temperature < 0 || input.temperature > 2)
+		)
+			throw new TypeError('temperature must be between 0 and 2');
+		if (
+			input.maxTokens !== undefined &&
+			(!Number.isInteger(input.maxTokens) || input.maxTokens < 1 || input.maxTokens > 32_768)
+		)
+			throw new TypeError('maxTokens must be an integer from 1 to 32768');
+
+		const [models, workspaceModels, functions] = await Promise.all([
+			this.listModels(input.signal),
+			this.listWorkspaceModels(input.signal),
+			this.listFunctions(input.signal)
+		]);
+		const model = models.find((candidate) => candidate.id === input.modelId);
+		if (
+			!model ||
+			model.kind !== 'model' ||
+			workspaceModels.some((candidate) => candidate.id === input.modelId) ||
+			functions.some((candidate) => candidate.id === input.modelId)
+		)
+			throw new OwuiError('not_found', 404, this.nextRequestId());
+
+		const params = {
+			...(input.temperature === undefined ? {} : { temperature: input.temperature }),
+			...(input.maxTokens === undefined ? {} : { max_tokens: input.maxTokens })
+		};
+		// Omitting parent_id, chat_id, user_message, and session_id selects the pinned v0.10.2
+		// direct API path. Adding parent_id: null would invoke OWUI chat-management behavior.
+		const { payload, requestId } = await this.request('api/chat/completions', {
+			method: 'POST',
+			body: {
+				model: input.modelId,
+				messages: [{ role: 'user', content: input.prompt }],
+				stream: false,
+				...(Object.keys(params).length === 0 ? {} : { params })
+			},
+			signal: input.signal
+		});
+		const root = object(payload, requestId);
+		const choices = array(root.choices, requestId);
+		if (choices.length !== 1) throw new OwuiError('invalid_response', 502, requestId);
+		const choice = object(choices[0], requestId);
+		const message = object(choice.message, requestId);
+		const content = string(message.content, requestId);
+		if (!content.trim() || content.length > TEXT_COMPLETION_MAX_CONTENT_LENGTH)
+			throw new OwuiError('invalid_response', 502, requestId);
+		return { modelId: input.modelId, content, requestId };
+	}
+
 	private user(value: JsonObject, requestId: string): StudioUser {
 		const role = string(value.role, requestId);
 		if (role !== 'user' && role !== 'admin')
@@ -395,6 +462,11 @@ export class OwuiClient {
 				if (error instanceof OwuiError) throw error;
 				if (options.signal?.aborted) throw error;
 				if (attempt < attempts) continue;
+				if (
+					error instanceof DOMException &&
+					(error.name === 'TimeoutError' || error.name === 'AbortError')
+				)
+					throw new OwuiError('timeout', 504, requestId, { cause: error });
 				throw new OwuiError('upstream_unavailable', 503, requestId, { cause: error });
 			}
 		}

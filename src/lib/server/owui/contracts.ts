@@ -68,3 +68,15 @@ export interface OwuiChat {
 	title: string;
 	updatedAt: number;
 }
+export interface OwuiTextCompletionRequest {
+	modelId: string;
+	prompt: string;
+	temperature?: number;
+	maxTokens?: number;
+	signal?: AbortSignal;
+}
+export interface OwuiTextCompletion {
+	modelId: string;
+	content: string;
+	requestId: string;
+}

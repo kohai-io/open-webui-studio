@@ -4,6 +4,7 @@ export type OwuiErrorCode =
 	| 'not_found'
 	| 'conflict'
 	| 'rate_limited'
+	| 'timeout'
 	| 'invalid_response'
 	| 'upstream_unavailable';
 export class OwuiError extends Error {
@@ -23,5 +24,6 @@ export function mapOwuiStatus(status: number): OwuiErrorCode {
 	if (status === 404) return 'not_found';
 	if (status === 409) return 'conflict';
 	if (status === 429) return 'rate_limited';
+	if (status === 408 || status === 504) return 'timeout';
 	return 'upstream_unavailable';
 }

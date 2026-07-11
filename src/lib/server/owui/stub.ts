@@ -5,6 +5,7 @@ export interface OwuiStubOptions {
 	files?: OwuiStubFile[];
 	denyPaths?: string[];
 	failFirstPaths?: string[];
+	completionResponse?: unknown;
 }
 export interface OwuiStubFile {
 	id: string;
@@ -53,7 +54,7 @@ export function createOwuiStub(options: OwuiStubOptions = {}): {
 			return json({
 				data: [
 					{ id: 'model-a', name: 'Model A', tags: [{ name: 'allowed' }] },
-					{ id: 'assistant-a', name: 'Assistant A' }
+					{ id: 'assistant-a', name: 'Assistant A', info: { meta: { type: 'agent' } } }
 				]
 			});
 		if (path.endsWith('/api/v1/models/list'))
@@ -70,6 +71,13 @@ export function createOwuiStub(options: OwuiStubOptions = {}): {
 				total: 1
 			});
 		if (path.endsWith('/api/v1/functions/')) return json([]);
+		if (path.endsWith('/api/chat/completions'))
+			return json(
+				options.completionResponse ?? {
+					id: 'completion-a',
+					choices: [{ index: 0, message: { role: 'assistant', content: 'Completed text' } }]
+				}
+			);
 		if (path.endsWith('/api/v1/files/')) {
 			const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
 			const visible = role === 'admin' ? files : files.filter((file) => file.userId === userId);
