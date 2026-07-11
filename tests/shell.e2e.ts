@@ -14,6 +14,10 @@ test('serves the signed-out Welcome and Agents states plus health under the base
 	await expect(page.getByRole('heading', { level: 1, name: 'Agents & models' })).toBeVisible();
 	await expect(page.getByText('Please sign in to view your catalogue.')).toBeVisible();
 
+	await page.goto('./flows');
+	await expect(page.getByRole('heading', { level: 1, name: 'Flows' })).toBeVisible();
+	await expect(page.getByText('Sign in to work with Flows.')).toBeVisible();
+
 	const health = await request.get('./health');
 	expect(health.ok()).toBeTruthy();
 	expect(await health.json()).toMatchObject({ status: 'ok', service: 'open-webui-studio' });

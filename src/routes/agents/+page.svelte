@@ -7,7 +7,10 @@
 
 <svelte:head><title>Studio · Agents</title></svelte:head>
 <main>
-	<nav><a href={resolve('/')}>← Welcome</a> · <a href={resolve('/media')}>Media</a></nav>
+	<nav>
+		<a href={resolve('/')}>← Welcome</a> · <a href={resolve('/media')}>Media</a> ·
+		<a href={resolve('/flows')}>Flows</a>
+	</nav>
 	<header>
 		<p>Catalogue</p>
 		<h1>Agents & models</h1>
