@@ -23,9 +23,17 @@ describe('OwuiClient', () => {
 		const stub = createOwuiStub({ userId: 'user-a' });
 		const client = new OwuiClient({ ...stubClientOptions(stub.fetch), token: 'user-token' });
 		expect(await client.getCurrentUser()).toMatchObject({ id: 'user-a' });
-		expect(await client.listModels()).toEqual([
-			{ id: 'model-a', name: 'Model A', kind: 'model', tags: ['allowed'] }
+		expect(await client.listModels()).toHaveLength(2);
+		expect(await client.listWorkspaceModels()).toEqual([
+			{
+				id: 'assistant-a',
+				baseModelId: 'model-a',
+				name: 'Research agent',
+				tags: ['research'],
+				isActive: true
+			}
 		]);
+		expect(await client.listFunctions()).toEqual([]);
 		expect((await client.listFiles()).items[0]).toMatchObject({ id: 'file-user-a' });
 		expect((await client.listKnowledge()).items[0]).toMatchObject({ id: 'knowledge-user-a' });
 		expect(await client.createChat('model-a')).toMatchObject({ id: 'chat-user-a' });
@@ -68,7 +76,7 @@ describe('OwuiClient', () => {
 			...stubClientOptions(readStub.fetch),
 			token: 'user-token'
 		});
-		await expect(readClient.listModels()).resolves.toHaveLength(1);
+		await expect(readClient.listModels()).resolves.toHaveLength(2);
 		expect(readStub.requests).toHaveLength(2);
 		const writeStub = createOwuiStub({ failFirstPaths: ['/api/v1/chats/new'] });
 		const writeClient = new OwuiClient({

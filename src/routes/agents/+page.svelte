@@ -11,6 +11,10 @@
 	<header>
 		<p>Catalogue</p>
 		<h1>Agents & models</h1>
+		<p class="manage">
+			Agent definitions, prompts, knowledge and tools remain managed in Open WebUI.
+			<a href={data.workspaceModelsUrl}>Manage agents ↗</a>
+		</p>
 	</header>
 	{#if !data.authenticated}<p>
 			Please <a href={loginHref}>sign in</a> to view your catalogue.

@@ -4,6 +4,8 @@ import type {
 	OwuiFileSummary,
 	OwuiKnowledgeSummary,
 	OwuiModel,
+	OwuiFunction,
+	OwuiWorkspaceModel,
 	OwuiPage,
 	OwuiSession,
 	StudioUser,
@@ -83,6 +85,41 @@ export class OwuiClient {
 				kind: meta?.type === 'agent' ? 'agent' : 'model',
 				tags
 			};
+		});
+	}
+
+	async listWorkspaceModels(): Promise<OwuiWorkspaceModel[]> {
+		const items: OwuiWorkspaceModel[] = [];
+		for (let page = 1; ; page += 1) {
+			const { payload, requestId } = await this.request(`api/v1/models/list?page=${page}`);
+			const root = object(payload, requestId);
+			for (const entry of array(root.items, requestId)) {
+				const model = object(entry, requestId);
+				const meta = this.optionalObject(model.meta);
+				const tags = Array.isArray(meta?.tags)
+					? meta.tags.flatMap((tag) => {
+							const name = this.optionalObject(tag)?.name;
+							return typeof name === 'string' ? [name] : [];
+						})
+					: [];
+				items.push({
+					id: string(model.id, requestId),
+					baseModelId: nullableString(model.base_model_id, requestId),
+					name: string(model.name, requestId),
+					tags,
+					isActive: model.is_active === true
+				});
+			}
+			const total = number(root.total, requestId);
+			if (items.length >= total || array(root.items, requestId).length === 0) return items;
+		}
+	}
+
+	async listFunctions(): Promise<OwuiFunction[]> {
+		const { payload, requestId } = await this.request('api/v1/functions/');
+		return array(payload, requestId).map((entry) => {
+			const fn = object(entry, requestId);
+			return { id: string(fn.id, requestId), isActive: fn.is_active === true };
 		});
 	}
 

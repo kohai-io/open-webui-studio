@@ -9,11 +9,32 @@ export interface CatalogueData {
 }
 
 export async function loadCatalogue(client: OwuiClient): Promise<CatalogueData> {
-	const [user, available] = await Promise.all([client.getCurrentUser(), client.listModels()]);
+	const [user, available, workspaceModels, functions] = await Promise.all([
+		client.getCurrentUser(),
+		client.listModels(),
+		client.listWorkspaceModels(),
+		client.listFunctions()
+	]);
+	const workspaceById = new Map(workspaceModels.map((item) => [item.id, item]));
+	const agentIds = new Set([
+		...workspaceModels.filter((item) => item.isActive && item.baseModelId).map((item) => item.id),
+		...functions.filter((item) => item.isActive).map((item) => item.id)
+	]);
+	const merged = available.map((item) => {
+		const workspace = workspaceById.get(item.id);
+		return workspace
+			? {
+					...item,
+					name: workspace.name,
+					tags: workspace.tags,
+					kind: agentIds.has(item.id) ? ('agent' as const) : item.kind
+				}
+			: { ...item, kind: agentIds.has(item.id) ? ('agent' as const) : item.kind };
+	});
 	return {
 		user,
-		models: available.filter((item) => item.kind === 'model'),
-		agents: available.filter((item) => item.kind === 'agent')
+		models: merged.filter((item) => item.kind === 'model'),
+		agents: merged.filter((item) => item.kind === 'agent')
 	};
 }
 

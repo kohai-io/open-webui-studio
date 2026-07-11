@@ -16,6 +16,17 @@ export interface OwuiModel {
 	kind: 'model' | 'agent';
 	tags: string[];
 }
+export interface OwuiWorkspaceModel {
+	id: string;
+	baseModelId: string | null;
+	name: string;
+	tags: string[];
+	isActive: boolean;
+}
+export interface OwuiFunction {
+	id: string;
+	isActive: boolean;
+}
 export interface OwuiFileSummary {
 	id: string;
 	filename: string;

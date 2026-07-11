@@ -21,7 +21,26 @@ export function createOwuiStub(options: OwuiStubOptions = {}): {
 		if (path.includes('/oauth/') && path.endsWith('/token/exchange'))
 			return json({ ...user(userId), token: `owui-token-${userId}`, expires_at: 2_000_000_000 });
 		if (path.endsWith('/api/models'))
-			return json({ data: [{ id: 'model-a', name: 'Model A', tags: [{ name: 'allowed' }] }] });
+			return json({
+				data: [
+					{ id: 'model-a', name: 'Model A', tags: [{ name: 'allowed' }] },
+					{ id: 'assistant-a', name: 'Assistant A' }
+				]
+			});
+		if (path.endsWith('/api/v1/models/list'))
+			return json({
+				items: [
+					{
+						id: 'assistant-a',
+						base_model_id: 'model-a',
+						name: 'Research agent',
+						meta: { tags: [{ name: 'research' }] },
+						is_active: true
+					}
+				],
+				total: 1
+			});
+		if (path.endsWith('/api/v1/functions/')) return json([]);
 		if (path.endsWith('/api/v1/files/'))
 			return json({
 				items: [
