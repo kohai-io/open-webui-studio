@@ -1,4 +1,8 @@
+import type { FlowDefinitionV1, FlowPositionV1 } from './types';
+
 export type LinearTransform = 'none' | 'trim' | 'uppercase' | 'lowercase';
+export type LinearNodeId = 'input' | 'model' | 'transform' | 'output';
+export type LinearFlowPositions = Record<LinearNodeId, FlowPositionV1>;
 
 export interface LinearFlowDraft {
 	name: string;
@@ -6,6 +10,7 @@ export interface LinearFlowDraft {
 	modelId: string;
 	prompt: string;
 	transform: LinearTransform;
+	positions: LinearFlowPositions;
 }
 
 export function defaultLinearFlowDraft(modelId = ''): LinearFlowDraft {
@@ -14,11 +19,17 @@ export function defaultLinearFlowDraft(modelId = ''): LinearFlowDraft {
 		description: '',
 		modelId,
 		prompt: 'Respond to {{node.input.output}}',
-		transform: 'none'
+		transform: 'none',
+		positions: {
+			input: { x: 0, y: 0 },
+			model: { x: 300, y: 0 },
+			transform: { x: 600, y: 0 },
+			output: { x: 900, y: 0 }
+		}
 	};
 }
 
-export function buildLinearFlowDefinition(draft: LinearFlowDraft) {
+export function buildLinearFlowDefinition(draft: LinearFlowDraft): FlowDefinitionV1 {
 	const transform =
 		draft.transform === 'none'
 			? []
@@ -26,31 +37,31 @@ export function buildLinearFlowDefinition(draft: LinearFlowDraft) {
 					{
 						id: 'transform',
 						type: 'transform' as const,
-						position: { x: 480, y: 0 },
+						position: { ...draft.positions.transform },
 						config: { operation: draft.transform }
 					}
 				];
 	return {
-		schemaVersion: 1 as const,
+		schemaVersion: 1,
 		nodes: [
 			{
 				id: 'input',
-				type: 'input' as const,
-				position: { x: 0, y: 0 },
+				type: 'input',
+				position: { ...draft.positions.input },
 				config: { key: 'request' }
 			},
 			{
 				id: 'model',
-				type: 'model' as const,
-				position: { x: 240, y: 0 },
+				type: 'model',
+				position: { ...draft.positions.model },
 				config: { modelId: draft.modelId, prompt: draft.prompt }
 			},
 			...transform,
 			{
 				id: 'output',
-				type: 'output' as const,
-				position: { x: draft.transform === 'none' ? 480 : 720, y: 0 },
-				config: { format: 'text' as const }
+				type: 'output',
+				position: { ...draft.positions.output },
+				config: { format: 'text' }
 			}
 		],
 		edges:
@@ -100,12 +111,19 @@ export function linearFlowDraftFromRecord(value: unknown): LinearFlowDraft | nul
 		if (operation !== 'trim' && operation !== 'uppercase' && operation !== 'lowercase') return null;
 		transformType = operation;
 	}
+	const positions: LinearFlowPositions = {
+		input: positionOf(input),
+		model: positionOf(model),
+		transform: transform ? positionOf(transform) : positionBetween(model, output),
+		output: positionOf(output)
+	};
 	const expected = buildLinearFlowDefinition({
 		name: value.name,
 		description: typeof value.description === 'string' ? value.description : '',
 		modelId: model.config.modelId,
 		prompt: model.config.prompt,
-		transform: transformType
+		transform: transformType,
+		positions
 	});
 	if (!sameEdges(edges, expected.edges)) return null;
 	return {
@@ -113,7 +131,47 @@ export function linearFlowDraftFromRecord(value: unknown): LinearFlowDraft | nul
 		description: typeof value.description === 'string' ? value.description : '',
 		modelId: model.config.modelId,
 		prompt: model.config.prompt,
-		transform: transformType
+		transform: transformType,
+		positions
+	};
+}
+
+export function updateLinearNodePosition(
+	draft: LinearFlowDraft,
+	nodeId: LinearNodeId,
+	position: FlowPositionV1
+): LinearFlowDraft {
+	return {
+		...draft,
+		positions: {
+			...draft.positions,
+			[nodeId]: { ...position }
+		}
+	};
+}
+
+function positionOf(node: Record<string, unknown>): FlowPositionV1 {
+	const position = node.position;
+	if (
+		!isRecord(position) ||
+		typeof position.x !== 'number' ||
+		!Number.isFinite(position.x) ||
+		typeof position.y !== 'number' ||
+		!Number.isFinite(position.y)
+	)
+		return { x: 0, y: 0 };
+	return { x: position.x, y: position.y };
+}
+
+function positionBetween(
+	left: Record<string, unknown>,
+	right: Record<string, unknown>
+): FlowPositionV1 {
+	const leftPosition = positionOf(left);
+	const rightPosition = positionOf(right);
+	return {
+		x: (leftPosition.x + rightPosition.x) / 2,
+		y: (leftPosition.y + rightPosition.y) / 2
 	};
 }
 

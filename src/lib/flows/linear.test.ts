@@ -47,4 +47,31 @@ describe('linear Flow editor model', () => {
 		(model.config as { temperature?: number }).temperature = 0.4;
 		expect(linearFlowDraftFromRecord({ ...draft, definition: configuredModel })).toBeNull();
 	});
+
+	it('preserves saved positions and deterministically places a newly enabled transform', () => {
+		const draft = defaultLinearFlowDraft('model-a');
+		draft.positions.input = { x: -120, y: 75 };
+		draft.positions.model = { x: 260, y: -40 };
+		draft.positions.output = { x: 940, y: 160 };
+		const definition = buildLinearFlowDefinition(draft);
+		const restored = linearFlowDraftFromRecord({ name: 'Positioned', definition });
+
+		expect(restored?.positions).toEqual({
+			input: { x: -120, y: 75 },
+			model: { x: 260, y: -40 },
+			transform: { x: 600, y: 60 },
+			output: { x: 940, y: 160 }
+		});
+		if (!restored) throw new Error('fixture mismatch');
+		restored.transform = 'trim';
+		const withTransform = buildLinearFlowDefinition(restored);
+		expect(withTransform.nodes.find((node) => node.id === 'transform')?.position).toEqual({
+			x: 600,
+			y: 60
+		});
+		expect(withTransform.nodes.find((node) => node.id === 'output')?.position).toEqual({
+			x: 940,
+			y: 160
+		});
+	});
 });

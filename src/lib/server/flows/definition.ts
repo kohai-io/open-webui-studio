@@ -1,60 +1,34 @@
-export const FLOW_DEFINITION_SCHEMA_VERSION = 1 as const;
+import {
+	FLOW_DEFINITION_SCHEMA_VERSION,
+	type FlowDefinitionV1,
+	type FlowEdgeV1,
+	type FlowNodeV1,
+	type FlowOutputNodeV1,
+	type FlowPositionV1,
+	type FlowInputNodeV1,
+	type FlowModelNodeV1,
+	type FlowTransformConfigV1
+} from '$lib/flows/types';
+
+export {
+	FLOW_DEFINITION_SCHEMA_VERSION,
+	type FlowDefinitionV1,
+	type FlowEdgeV1,
+	type FlowNodeV1,
+	type FlowOutputNodeV1,
+	type FlowPositionV1,
+	type FlowInputNodeV1,
+	type FlowModelNodeV1,
+	type FlowTransformConfigV1,
+	type FlowTransformNodeV1
+} from '$lib/flows/types';
+
 export const FLOW_MAX_NODES = 50;
 export const FLOW_MAX_EDGES = 100;
 export const FLOW_MAX_DEFINITION_BYTES = 256 * 1024;
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const JSON_PATH = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
-
-export interface FlowPositionV1 {
-	x: number;
-	y: number;
-}
-
-interface FlowNodeBaseV1 {
-	id: string;
-	position: FlowPositionV1;
-}
-
-export interface FlowInputNodeV1 extends FlowNodeBaseV1 {
-	type: 'input';
-	config: { key: string; defaultValue?: string };
-}
-
-export interface FlowModelNodeV1 extends FlowNodeBaseV1 {
-	type: 'model';
-	config: { modelId: string; prompt: string; temperature?: number; maxTokens?: number };
-}
-
-export type FlowTransformConfigV1 =
-	| { operation: 'uppercase' | 'lowercase' | 'trim' }
-	| { operation: 'replace'; search: string; replacement: string }
-	| { operation: 'extract'; path: string }
-	| { operation: 'template'; template: string };
-
-export interface FlowTransformNodeV1 extends FlowNodeBaseV1 {
-	type: 'transform';
-	config: FlowTransformConfigV1;
-}
-
-export interface FlowOutputNodeV1 extends FlowNodeBaseV1 {
-	type: 'output';
-	config: { format: 'text' | 'json' };
-}
-
-export type FlowNodeV1 = FlowInputNodeV1 | FlowModelNodeV1 | FlowTransformNodeV1 | FlowOutputNodeV1;
-
-export interface FlowEdgeV1 {
-	id: string;
-	source: string;
-	target: string;
-}
-
-export interface FlowDefinitionV1 {
-	schemaVersion: typeof FLOW_DEFINITION_SCHEMA_VERSION;
-	nodes: FlowNodeV1[];
-	edges: FlowEdgeV1[];
-}
 
 export interface FlowValidationIssue {
 	path: string;

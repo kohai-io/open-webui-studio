@@ -5,8 +5,13 @@
 		buildLinearFlowDefinition,
 		defaultLinearFlowDraft,
 		linearFlowDraftFromRecord,
-		type LinearFlowDraft
+		updateLinearNodePosition,
+		type LinearFlowDraft,
+		type LinearNodeId
 	} from '$lib/flows/linear';
+	import { nodeExecutionStateMap } from '$lib/flows/execution-state';
+	import type { FlowPositionV1 } from '$lib/flows/types';
+	import FlowCanvas from '$lib/components/flows/FlowCanvas.svelte';
 
 	let { data } = $props();
 	const initialData = untrack(() => data);
@@ -65,6 +70,11 @@
 	let message = $state('');
 	let errorMessage = $state('');
 	let eventSource: EventSource | null = null;
+	let selectedNodeId = $state<LinearNodeId>('model');
+	let canvasDefinition = $derived(buildLinearFlowDefinition(draft));
+	let executionByNodeId = $derived.by(() =>
+		nodeExecutionStateMap(currentExecution?.nodes ?? [], progress)
+	);
 
 	const loginHref = resolve(`/auth/login?return=${encodeURIComponent(resolve('/flows'))}`);
 	const activeStates = new Set(['queued', 'running', 'cancel_requested']);
@@ -104,6 +114,7 @@
 		selectedId = null;
 		selectedFlow = null;
 		draft = defaultLinearFlowDraft(data.models[0]?.id ?? '');
+		selectedNodeId = 'model';
 		editable = true;
 		executions = [];
 		currentExecution = null;
@@ -129,6 +140,7 @@
 				name: flow.name,
 				description: flow.description ?? ''
 			};
+			selectedNodeId = 'model';
 			executions = history.items;
 			currentExecution = null;
 			progress = [];
@@ -282,6 +294,22 @@
 		);
 	}
 
+	function selectCanvasNode(nodeId: string) {
+		if (isLinearNodeId(nodeId)) selectedNodeId = nodeId;
+	}
+
+	function updateCanvasPosition(nodeId: string, position: FlowPositionV1) {
+		if (isLinearNodeId(nodeId)) draft = updateLinearNodePosition(draft, nodeId, position);
+	}
+
+	function handleTransformChange() {
+		if (draft.transform === 'none' && selectedNodeId === 'transform') selectedNodeId = 'model';
+	}
+
+	function isLinearNodeId(value: string): value is LinearNodeId {
+		return value === 'input' || value === 'model' || value === 'transform' || value === 'output';
+	}
+
 	function formatOutput(value: unknown) {
 		return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 	}
@@ -428,47 +456,73 @@
 								void saveFlow();
 							}}
 						>
-							<div class="two-fields">
-								<label>Flow name<input bind:value={draft.name} required maxlength="120" /></label>
-								<label
-									>Model<select
-										bind:value={draft.modelId}
-										required
-										disabled={data.models.length === 0}
-									>
-										<option value="" disabled>Select a model</option>
-										{#each data.models as model (model.id)}<option value={model.id}
-												>{model.name}</option
-											>{/each}
-									</select></label
-								>
-							</div>
+							<label>Flow name<input bind:value={draft.name} required maxlength="120" /></label>
 							<label
 								>Description<textarea bind:value={draft.description} rows="2" maxlength="1000"
 								></textarea></label
 							>
-							<label
-								>Prompt template<textarea
-									bind:value={draft.prompt}
-									rows="5"
-									required
-									maxlength="32768"></textarea>
-								<small
-									>Use <code>{'{{node.input.output}}'}</code> where the run input should appear.</small
+							<div class="topology-setting">
+								<label
+									>Optional transform<select
+										bind:value={draft.transform}
+										onchange={handleTransformChange}
+									>
+										<option value="none">None</option>
+										<option value="trim">Trim whitespace</option>
+										<option value="uppercase">Uppercase</option>
+										<option value="lowercase">Lowercase</option>
+									</select></label
 								>
-							</label>
-							<label
-								>Optional transform<select bind:value={draft.transform}>
-									<option value="none">None</option>
-									<option value="trim">Trim whitespace</option>
-									<option value="uppercase">Uppercase</option>
-									<option value="lowercase">Lowercase</option>
-								</select></label
-							>
+								<p>Topology is locked to Input → Model → optional Transform → Output.</p>
+							</div>
 
-							<div class="flow-strip" aria-label="Flow structure">
-								<span>Input</span><i>→</i><span>Model</span>{#if draft.transform !== 'none'}<i>→</i
-									><span>{draft.transform}</span>{/if}<i>→</i><span>Output</span>
+							<div class="canvas-editor">
+								<FlowCanvas
+									definition={canvasDefinition}
+									{executionByNodeId}
+									onselect={selectCanvasNode}
+									onpositionchange={updateCanvasPosition}
+								/>
+								<section class="node-config" aria-labelledby="node-configuration">
+									<p class="eyebrow">Selected node</p>
+									<h3 id="node-configuration">
+										{selectedNodeId[0].toUpperCase() + selectedNodeId.slice(1)} configuration
+									</h3>
+									{#if selectedNodeId === 'model'}
+										<label
+											>Model<select
+												bind:value={draft.modelId}
+												required
+												disabled={data.models.length === 0}
+											>
+												<option value="" disabled>Select a model</option>
+												{#each data.models as model (model.id)}<option value={model.id}
+														>{model.name}</option
+													>{/each}
+											</select></label
+										>
+										<label
+											>Prompt template<textarea
+												bind:value={draft.prompt}
+												rows="8"
+												required
+												maxlength="32768"></textarea>
+											<small
+												>Use <code>{'{{node.input.output}}'}</code> where the run input should appear.</small
+											>
+										</label>
+									{:else if selectedNodeId === 'transform'}
+										<p class="muted">
+											{draft.transform === 'none'
+												? 'Enable a transform above to configure this node.'
+												: `This node applies ${draft.transform} to the model response.`}
+										</p>
+									{:else if selectedNodeId === 'input'}
+										<p class="muted">Run text enters through the fixed <code>request</code> key.</p>
+									{:else}
+										<p class="muted">The terminal result is returned as text.</p>
+									{/if}
+								</section>
 							</div>
 
 							<div class="form-actions">
@@ -742,26 +796,42 @@
 		color: #ff9da8;
 		cursor: pointer;
 	}
-	.flow-strip {
+	.topology-setting {
 		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		overflow-x: auto;
-		padding: 1rem;
+		align-items: end;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.85rem 1rem;
 		border-radius: 0.75rem;
 		background: #0a0d10;
 	}
-	.flow-strip span {
-		padding: 0.55rem 0.75rem;
-		border: 1px solid #34413c;
-		border-radius: 0.55rem;
-		color: #dffcef;
-		text-transform: capitalize;
-		white-space: nowrap;
+	.topology-setting label {
+		min-width: 13rem;
 	}
-	.flow-strip i {
-		color: #6ee7b7;
-		font-style: normal;
+	.topology-setting p {
+		margin: 0 0 0.75rem;
+		color: #7f8a95;
+		font-size: 0.78rem;
+	}
+	.canvas-editor {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(15rem, 19rem);
+		gap: 1rem;
+		align-items: stretch;
+	}
+	.node-config {
+		min-height: 24rem;
+		padding: 1rem;
+		border: 1px solid #252d35;
+		border-radius: 0.9rem;
+		background: #0b0f13;
+	}
+	.node-config h3 {
+		margin: 0.35rem 0 1.2rem;
+		text-transform: capitalize;
+	}
+	.node-config label + label {
+		margin-top: 1rem;
 	}
 	.node-list {
 		display: grid;
@@ -862,6 +932,12 @@
 		.page-header {
 			align-items: start;
 		}
+		.canvas-editor {
+			grid-template-columns: 1fr;
+		}
+		.node-config {
+			min-height: auto;
+		}
 	}
 	@media (max-width: 600px) {
 		nav {
@@ -878,6 +954,10 @@
 		aside,
 		.two-fields {
 			grid-template-columns: 1fr;
+		}
+		.topology-setting {
+			align-items: stretch;
+			flex-direction: column;
 		}
 		.panel {
 			padding: 1rem;
