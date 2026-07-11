@@ -1,5 +1,6 @@
 <script lang="ts">
 	import CatalogueGrid from '$lib/components/CatalogueGrid.svelte';
+	import AgentGrid from '$lib/components/AgentGrid.svelte';
 	import { resolve } from '$app/paths';
 	let { data, form } = $props();
 </script>
@@ -34,10 +35,9 @@
 			<p class="lede">Choose an authorised agent or model and continue in Open WebUI.</p>
 		</div>
 		{#if form?.launchError}<p class="error">Could not open that chat: {form.launchError}</p>{/if}
-		<CatalogueGrid
-			eyebrow="agents"
+		<AgentGrid
 			title="Agents ready to work"
-			items={data.catalogue.agents.slice(0, 6)}
+			agents={data.catalogue.agents.slice(0, 6)}
 			empty="No agents are available to this account yet."
 		/>
 		<CatalogueGrid

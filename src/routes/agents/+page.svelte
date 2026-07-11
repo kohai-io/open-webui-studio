@@ -1,5 +1,6 @@
 <script lang="ts">
 	import CatalogueGrid from '$lib/components/CatalogueGrid.svelte';
+	import AgentGrid from '$lib/components/AgentGrid.svelte';
 	import { resolve } from '$app/paths';
 	let { data, form } = $props();
 	const loginHref = resolve(`/auth/login?return=${encodeURIComponent(resolve('/agents'))}`);
@@ -17,12 +18,33 @@
 		</p>
 	{:else if data.state === 'ready' && data.catalogue}{#if form?.launchError}<p class="error">
 				Could not open that chat: {form.launchError}
-			</p>{/if}<CatalogueGrid
-			eyebrow="agents"
-			title="Authorised agents"
-			items={data.catalogue.agents}
-			empty="No agents are available to this account."
-		/><CatalogueGrid
+			</p>{/if}{#if form?.agentError}<p class="error">
+				Could not save that agent: {form.agentError}
+			</p>{/if}
+		<section class="create" aria-labelledby="create-agent-heading">
+			<p>New agent</p>
+			<h2 id="create-agent-heading">Compose a personal launcher</h2>
+			<form method="POST" action="?/createAgent">
+				<label>Name <input name="name" required maxlength="80" /></label>
+				<label>Description <textarea name="description" maxlength="500"></textarea></label>
+				<label
+					>OWUI model <select name="modelId" required
+						><option value="">Choose a model</option
+						>{#each data.catalogue.models as model (model.id)}<option value={model.id}
+								>{model.name}</option
+							>{/each}</select
+					></label
+				>
+				<button type="submit">Create agent</button>
+			</form>
+		</section>
+		<AgentGrid
+			title="Your agents"
+			agents={data.catalogue.agents}
+			empty="Create your first personal agent above."
+			editable
+		/>
+		<CatalogueGrid
 			eyebrow="models"
 			title="Authorised models"
 			items={data.catalogue.models}
@@ -67,5 +89,58 @@
 	}
 	.error {
 		color: #ffc5cc;
+	}
+	.create {
+		margin-top: 4rem;
+		padding: 1.5rem;
+		border: 1px solid #2a3038;
+		border-radius: 1rem;
+		background: #14171c;
+	}
+	.create > p {
+		margin: 0;
+		color: #6ee7b7;
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+	}
+	.create h2 {
+		margin: 0.5rem 0 1.5rem;
+		font-size: 2rem;
+	}
+	.create form {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+		gap: 1rem;
+		align-items: end;
+	}
+	.create label {
+		display: grid;
+		gap: 0.4rem;
+		color: #c7cdd4;
+	}
+	.create input,
+	.create textarea,
+	.create select {
+		width: 100%;
+		padding: 0.75rem;
+		border: 1px solid #3a414b;
+		border-radius: 0.6rem;
+		background: #0b0d10;
+		color: #f5f7f8;
+	}
+	.create textarea {
+		min-height: 3rem;
+		resize: vertical;
+	}
+	.create button {
+		border: 0;
+		border-radius: 999px;
+		padding: 0.8rem 1.2rem;
+		background: #6ee7b7;
+		color: #082a1d;
+		font-weight: 700;
+		cursor: pointer;
 	}
 </style>

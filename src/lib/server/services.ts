@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/private';
+import { AgentStore } from '$lib/server/agents/store';
 import { openStudioDatabase } from '$lib/server/database/database';
 import { AuthService } from '$lib/server/oidc/auth-service';
 import { OpenIdProvider } from '$lib/server/oidc/provider';
@@ -10,6 +11,7 @@ import { SessionStore } from '$lib/server/sessions/store';
 let services:
 	| {
 			auth: AuthService;
+			agents: AgentStore;
 			sessions: SessionStore;
 			owuiForToken: (token: string) => OwuiClient;
 			owuiPublicUrl: string;
@@ -39,6 +41,7 @@ export function getServices() {
 	const owui = new OwuiClient({ baseUrl: owuiBaseUrl });
 	services = {
 		sessions,
+		agents: new AgentStore(database),
 		auth: new AuthService(
 			env.OWUI_OAUTH_PROVIDER ?? 'oidc',
 			provider,
