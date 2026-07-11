@@ -15,6 +15,7 @@ describe('FlowStore', () => {
 			.all() as Array<{ name: string }>;
 		expect(tables.map((row) => row.name).sort()).toEqual([
 			'studio_flow',
+			'studio_flow_audit',
 			'studio_flow_credential_lease',
 			'studio_flow_event',
 			'studio_flow_execution',
@@ -25,6 +26,13 @@ describe('FlowStore', () => {
 		expect(
 			database
 				.prepare("SELECT COUNT(*) AS count FROM studio_migration WHERE name = '0003_flows.sql'")
+				.get()
+		).toEqual({ count: 1 });
+		expect(
+			database
+				.prepare(
+					"SELECT COUNT(*) AS count FROM studio_migration WHERE name = '0007_flow_audit.sql'"
+				)
 				.get()
 		).toEqual({ count: 1 });
 		database.close();
@@ -285,6 +293,17 @@ describe('FlowStore', () => {
 			expect(database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({
 				count: 0
 			});
+		expect(
+			database
+				.prepare(
+					`SELECT action, flow_id, flow_version FROM studio_flow_audit
+					 WHERE owner_owui_user_id = 'user-a' ORDER BY id`
+				)
+				.all()
+		).toEqual([
+			{ action: 'flow_created', flow_id: flow.id, flow_version: 1 },
+			{ action: 'flow_deleted', flow_id: flow.id, flow_version: 1 }
+		]);
 		database.close();
 	});
 });

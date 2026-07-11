@@ -6,6 +6,7 @@ import {
 	type FlowValidationIssue,
 	validateFlowDefinition
 } from './definition';
+import { appendFlowAudit } from './audit';
 
 export type FlowStoreErrorCode =
 	'not_found' | 'validation_failed' | 'conflict' | 'active_execution';
@@ -126,6 +127,13 @@ export class FlowStore {
 				)
 				.run(id, owner, name, description, now, now);
 			this.insertVersion(id, 1, owner, name, description, encoded, hash, now);
+			appendFlowAudit(this.database, {
+				ownerOwuiUserId: owner,
+				action: 'flow_created',
+				flowId: id,
+				flowVersion: 1,
+				createdAt: now
+			});
 		})();
 		return this.require(owner, id);
 	}
@@ -207,6 +215,13 @@ export class FlowStore {
 					input.expectedRevision
 				);
 			if (result.changes !== 1) throw new FlowStoreError('conflict');
+			appendFlowAudit(this.database, {
+				ownerOwuiUserId: owner,
+				action: 'flow_updated',
+				flowId: safeId,
+				flowVersion: nextVersion,
+				createdAt: now
+			});
 		})();
 		return this.require(owner, safeId);
 	}
@@ -225,6 +240,13 @@ export class FlowStore {
 				)
 				.get(safeId, owner);
 			if (active) throw new FlowStoreError('active_execution');
+			appendFlowAudit(this.database, {
+				ownerOwuiUserId: owner,
+				action: 'flow_deleted',
+				flowId: safeId,
+				flowVersion: this.current(owner, safeId)!.current_version,
+				createdAt: this.now()
+			});
 			this.database
 				.prepare('DELETE FROM studio_flow WHERE id = ? AND owner_owui_user_id = ?')
 				.run(safeId, owner);

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { openStudioDatabase } from '$lib/server/database/database';
 import type { StoredSession } from '$lib/server/sessions/store';
 import { FlowCredentialLeaseError, FlowCredentialLeaseStore } from './credential-leases';
+import { FlowAuditStore } from './audit';
 import { FlowExecutionStore } from './executions';
 import { validFlowDefinition } from './fixtures';
 import { FlowQueueError, FlowQueueService } from './queue';
@@ -49,6 +50,9 @@ describe('FlowQueueService', () => {
 		expect(tableCount(harness.database, 'studio_flow_execution')).toBe(0);
 		expect(tableCount(harness.database, 'studio_flow_execution_node')).toBe(0);
 		expect(tableCount(harness.database, 'studio_flow_event')).toBe(0);
+		expect(
+			new FlowAuditStore(harness.database).list('user-a').map((entry) => entry.action)
+		).toEqual(['flow_created']);
 		expect(harness.onQueued).not.toHaveBeenCalled();
 		harness.close();
 	});
@@ -74,6 +78,11 @@ describe('FlowQueueService', () => {
 		expect(issue).toHaveBeenCalledTimes(1);
 		expect(tableCount(harness.database, 'studio_flow_execution')).toBe(1);
 		expect(tableCount(harness.database, 'studio_flow_credential_lease')).toBe(1);
+		expect(
+			new FlowAuditStore(harness.database)
+				.list('user-a')
+				.filter((entry) => entry.action === 'execution_queued')
+		).toHaveLength(1);
 		harness.close();
 	});
 

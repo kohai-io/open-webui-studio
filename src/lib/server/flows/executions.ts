@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { StudioDatabase } from '$lib/server/database/database';
 import { decryptJson, encryptJson } from '$lib/server/sessions/crypto';
 import { type FlowDefinitionV1, type FlowNodeV1, validateFlowDefinition } from './definition';
+import { appendFlowAudit } from './audit';
 
 const DEFAULT_CLAIM_TTL_MS = 30_000;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 128;
@@ -211,6 +212,15 @@ export class FlowExecutionStore {
 						)
 						.run(executionId, node.id, node.type, index + 1);
 				this.appendEvent(executionId, owner, 'execution', null, null, 'queued', null, now);
+				appendFlowAudit(this.options.database, {
+					ownerOwuiUserId: owner,
+					action: 'execution_queued',
+					flowId: safeFlowId,
+					flowVersion: version.version,
+					executionId,
+					executionState: 'queued',
+					createdAt: now
+				});
 			})
 			.immediate();
 		const created = this.findByIdempotencyKey(owner, idempotencyKey);
@@ -269,7 +279,8 @@ export class FlowExecutionStore {
 				if (active.count >= this.maxConcurrent) return null;
 				const candidate = this.options.database
 					.prepare(
-						`SELECT id, owner_owui_user_id FROM studio_flow_execution AS candidate
+						`SELECT id, owner_owui_user_id, flow_id, flow_version
+					 FROM studio_flow_execution AS candidate
 					 WHERE state = 'queued'
 					   AND NOT EXISTS (
 					     SELECT 1 FROM studio_flow_execution AS active
@@ -279,7 +290,14 @@ export class FlowExecutionStore {
 					 ORDER BY created_at ASC, id ASC
 					 LIMIT 1`
 					)
-					.get() as { id: string; owner_owui_user_id: string } | undefined;
+					.get() as
+					| {
+							id: string;
+							owner_owui_user_id: string;
+							flow_id: string;
+							flow_version: number;
+					  }
+					| undefined;
 				if (!candidate) return null;
 				const now = this.now();
 				const claimToken = randomBytes(32).toString('base64url');
@@ -305,6 +323,15 @@ export class FlowExecutionStore {
 					null,
 					now
 				);
+				appendFlowAudit(this.options.database, {
+					ownerOwuiUserId: candidate.owner_owui_user_id,
+					action: 'execution_started',
+					flowId: candidate.flow_id,
+					flowVersion: candidate.flow_version,
+					executionId: candidate.id,
+					executionState: 'running',
+					createdAt: now
+				});
 				return this.claimRecord(candidate.id, claimToken);
 			})
 			.immediate();
@@ -480,6 +507,15 @@ export class FlowExecutionStore {
 					null,
 					now
 				);
+				appendFlowAudit(this.options.database, {
+					ownerOwuiUserId: execution.owner_owui_user_id,
+					action: 'execution_succeeded',
+					flowId: execution.flow_id,
+					flowVersion: execution.flow_version,
+					executionId: id,
+					executionState: 'succeeded',
+					createdAt: now
+				});
 			})
 			.immediate();
 	}
@@ -513,6 +549,16 @@ export class FlowExecutionStore {
 					safeError,
 					now
 				);
+				appendFlowAudit(this.options.database, {
+					ownerOwuiUserId: execution.owner_owui_user_id,
+					action: 'execution_failed',
+					flowId: execution.flow_id,
+					flowVersion: execution.flow_version,
+					executionId: id,
+					executionState: 'failed',
+					errorCode: safeError,
+					createdAt: now
+				});
 			})
 			.immediate();
 	}
@@ -538,6 +584,16 @@ export class FlowExecutionStore {
 				if (nextState === 'cancelled')
 					this.settleOpenNodes(execution, 'cancelled', 'cancelled', now);
 				this.appendEvent(id, owner, 'execution', null, null, nextState, 'cancelled', now);
+				appendFlowAudit(this.options.database, {
+					ownerOwuiUserId: owner,
+					action: nextState === 'cancelled' ? 'execution_cancelled' : 'execution_cancel_requested',
+					flowId: execution.flow_id,
+					flowVersion: execution.flow_version,
+					executionId: id,
+					executionState: nextState,
+					errorCode: 'cancelled',
+					createdAt: now
+				});
 			})
 			.immediate();
 		return this.record(this.find(owner, id)!);
@@ -567,6 +623,16 @@ export class FlowExecutionStore {
 					'cancelled',
 					now
 				);
+				appendFlowAudit(this.options.database, {
+					ownerOwuiUserId: execution.owner_owui_user_id,
+					action: 'execution_cancelled',
+					flowId: execution.flow_id,
+					flowVersion: execution.flow_version,
+					executionId: id,
+					executionState: 'cancelled',
+					errorCode: 'cancelled',
+					createdAt: now
+				});
 			})
 			.immediate();
 	}
@@ -625,6 +691,15 @@ export class FlowExecutionStore {
 						null,
 						now
 					);
+					appendFlowAudit(this.options.database, {
+						ownerOwuiUserId: execution.owner_owui_user_id,
+						action: 'execution_requeued',
+						flowId: execution.flow_id,
+						flowVersion: execution.flow_version,
+						executionId: execution.id,
+						executionState: 'queued',
+						createdAt: now
+					});
 					result.requeued++;
 				}
 			})
@@ -655,6 +730,16 @@ export class FlowExecutionStore {
 			errorCode,
 			now
 		);
+		appendFlowAudit(this.options.database, {
+			ownerOwuiUserId: execution.owner_owui_user_id,
+			action: state === 'cancelled' ? 'execution_cancelled' : 'execution_failed',
+			flowId: execution.flow_id,
+			flowVersion: execution.flow_version,
+			executionId: execution.id,
+			executionState: state,
+			errorCode,
+			createdAt: now
+		});
 	}
 
 	private settleOpenNodes(
