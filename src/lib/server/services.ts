@@ -7,7 +7,14 @@ import { OwuiClient } from '$lib/server/owui/client';
 import { decodeSessionKey } from '$lib/server/sessions/crypto';
 import { SessionStore } from '$lib/server/sessions/store';
 
-let services: { auth: AuthService; sessions: SessionStore } | undefined;
+let services:
+	| {
+			auth: AuthService;
+			sessions: SessionStore;
+			owuiForToken: (token: string) => OwuiClient;
+			owuiPublicUrl: string;
+	  }
+	| undefined;
 export function getServices() {
 	if (services) return services;
 	const required = (name: string): string => {
@@ -32,7 +39,15 @@ export function getServices() {
 	const owui = new OwuiClient({ baseUrl: owuiBaseUrl });
 	services = {
 		sessions,
-		auth: new AuthService(env.OWUI_OAUTH_PROVIDER ?? 'oidc', provider, transactions, owui, sessions)
+		auth: new AuthService(
+			env.OWUI_OAUTH_PROVIDER ?? 'oidc',
+			provider,
+			transactions,
+			owui,
+			sessions
+		),
+		owuiForToken: (token) => new OwuiClient({ baseUrl: owuiBaseUrl, token }),
+		owuiPublicUrl: env.OWUI_PUBLIC_URL ?? owuiBaseUrl
 	};
 	return services;
 }
