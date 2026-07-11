@@ -14,7 +14,7 @@ RUN addgroup -S studio && adduser -S studio -G studio
 COPY --from=build --chown=studio:studio /app/build ./build
 COPY --from=build --chown=studio:studio /app/package.json ./package.json
 COPY --from=build --chown=studio:studio /app/package-lock.json ./package-lock.json
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 USER studio
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
