@@ -98,4 +98,138 @@ describe('OwuiClient', () => {
 		});
 		await expect(client.listModels()).rejects.toMatchObject({ code: 'invalid_response' });
 	});
+
+	it('returns only self-owned media across mixed paginated files', async () => {
+		const files = Array.from({ length: 55 }, (_, index) => ({
+			id: `other-${index}`,
+			userId: 'user-b',
+			filename: `other-${index}.mp4`,
+			contentType: 'video/mp4'
+		}));
+		files.splice(3, 0, {
+			id: 'owned-image',
+			userId: 'admin-a',
+			filename: 'owned.png',
+			contentType: 'image/png'
+		});
+		files.push({
+			id: 'owned-video',
+			userId: 'admin-a',
+			filename: 'owned.mp4',
+			contentType: 'video/mp4'
+		});
+		files.push({
+			id: 'owned-document',
+			userId: 'admin-a',
+			filename: 'notes.txt',
+			contentType: 'text/plain'
+		});
+		const stub = createOwuiStub({ userId: 'admin-a', role: 'admin', files });
+		const client = new OwuiClient({ ...stubClientOptions(stub.fetch), token: 'admin-token' });
+
+		const first = await client.listMedia('admin-a', null, 1);
+		expect(first.items).toEqual([
+			expect.objectContaining({ id: 'owned-image', mediaType: 'image' })
+		]);
+		expect(first.items[0]).not.toHaveProperty('ownerId');
+		expect(first.nextCursor).not.toBeNull();
+
+		const second = await client.listMedia('admin-a', first.nextCursor, 10);
+		expect(second.items.map((file) => file.id)).toEqual(['owned-video']);
+		expect(second.nextCursor).toBeNull();
+	});
+
+	it('searches by filename and normalises no matches to an empty page', async () => {
+		const stub = createOwuiStub({
+			userId: 'admin-a',
+			role: 'admin',
+			files: [
+				{ id: 'image-a', userId: 'admin-a', filename: 'summer.png', contentType: 'image/png' },
+				{ id: 'text-a', userId: 'admin-a', filename: 'summer.txt', contentType: 'text/plain' },
+				{ id: 'image-b', userId: 'user-b', filename: 'summer-secret.png', contentType: 'image/png' }
+			]
+		});
+		const client = new OwuiClient({ ...stubClientOptions(stub.fetch), token: 'admin-token' });
+
+		await expect(client.searchMedia('admin-a', 'summer')).resolves.toEqual({
+			items: [expect.objectContaining({ id: 'image-a', mediaType: 'image' })],
+			nextCursor: null
+		});
+		await expect(client.searchMedia('admin-a', 'winter')).resolves.toEqual({
+			items: [],
+			nextCursor: null
+		});
+		await expect(client.searchMedia('admin-a', '*')).rejects.toThrow(TypeError);
+	});
+
+	it('blocks administrator cross-user preview and download before requesting content', async () => {
+		const stub = createOwuiStub({
+			userId: 'admin-a',
+			role: 'admin',
+			files: [
+				{
+					id: 'owned-video',
+					userId: 'admin-a',
+					filename: 'owned.mp4',
+					contentType: 'video/mp4'
+				},
+				{
+					id: 'other-video',
+					userId: 'user-b',
+					filename: 'secret.mp4',
+					contentType: 'video/mp4'
+				}
+			]
+		});
+		const client = new OwuiClient({ ...stubClientOptions(stub.fetch), token: 'admin-token' });
+
+		await expect(client.openMediaContent('other-video', 'admin-a')).rejects.toMatchObject({
+			code: 'not_found',
+			status: 404
+		});
+		expect(stub.requests.map((request) => new URL(request.url).pathname)).toEqual([
+			'/api/v1/files/other-video'
+		]);
+	});
+
+	it('proxies owned range content with an allowlisted header set', async () => {
+		const stub = createOwuiStub({ userId: 'user-a' });
+		const client = new OwuiClient({ ...stubClientOptions(stub.fetch), token: 'user-token' });
+
+		const response = await client.openMediaContent('file-user-a', 'user-a', 'download', 'bytes=0-');
+		expect(response.status).toBe(206);
+		expect(response.headers.get('content-type')).toBe('video/mp4');
+		expect(response.headers.get('content-disposition')).toContain('attachment');
+		expect(response.headers.get('content-range')).toBe('bytes 0-4/13');
+		expect(response.headers.get('x-secret-upstream-header')).toBeNull();
+		expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+		expect(response.headers.get('content-security-policy')).toContain('sandbox');
+		expect(await response.text()).toBe('video-content');
+		const contentRequest = stub.requests.at(-1);
+		expect(contentRequest?.headers.get('range')).toBe('bytes=0-');
+		expect(contentRequest?.headers.get('authorization')).toBe('Bearer user-token');
+	});
+
+	it('excludes conflicting or unsupported media metadata', async () => {
+		const stub = createOwuiStub({
+			userId: 'user-a',
+			files: [
+				{ id: 'fallback', userId: 'user-a', filename: 'recording.wav', contentType: null },
+				{ id: 'conflict', userId: 'user-a', filename: 'photo.jpg', contentType: 'video/mp4' },
+				{ id: 'document', userId: 'user-a', filename: 'notes.pdf', contentType: 'application/pdf' },
+				{
+					id: 'active-image',
+					userId: 'user-a',
+					filename: 'active.svg',
+					contentType: 'image/svg+xml'
+				}
+			]
+		});
+		const client = new OwuiClient({ ...stubClientOptions(stub.fetch), token: 'user-token' });
+
+		const result = await client.listMedia('user-a');
+		expect(result.items).toEqual([
+			expect.objectContaining({ id: 'fallback', mediaType: 'audio', contentType: null })
+		]);
+	});
 });

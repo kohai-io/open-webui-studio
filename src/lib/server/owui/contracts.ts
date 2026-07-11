@@ -29,11 +29,26 @@ export interface OwuiFunction {
 }
 export interface OwuiFileSummary {
 	id: string;
+	ownerId: string;
 	filename: string;
 	contentType: string | null;
 	size: number | null;
 	createdAt: number;
 	updatedAt: number | null;
+}
+export type StudioMediaType = 'image' | 'video' | 'audio';
+export interface StudioMediaSummary {
+	id: string;
+	filename: string;
+	mediaType: StudioMediaType;
+	contentType: string | null;
+	size: number | null;
+	createdAt: number;
+	updatedAt: number | null;
+}
+export interface StudioMediaPage {
+	items: StudioMediaSummary[];
+	nextCursor: string | null;
 }
 export interface OwuiKnowledgeSummary {
 	id: string;

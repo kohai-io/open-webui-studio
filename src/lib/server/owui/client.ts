@@ -8,6 +8,9 @@ import type {
 	OwuiWorkspaceModel,
 	OwuiPage,
 	OwuiSession,
+	StudioMediaPage,
+	StudioMediaSummary,
+	StudioMediaType,
 	StudioUser,
 	StudioUserRole
 } from './contracts';
@@ -34,7 +37,25 @@ interface RequestOptions {
 	body?: unknown;
 	authenticated?: boolean;
 	idempotent?: boolean;
+	headers?: Record<string, string>;
 }
+
+const OWUI_FILE_PAGE_SIZE = 50;
+const MEDIA_SCAN_LIMIT = 500;
+const MEDIA_RESPONSE_HEADERS = new Set([
+	'accept-ranges',
+	'content-disposition',
+	'content-length',
+	'content-range',
+	'content-type',
+	'etag',
+	'last-modified'
+]);
+const MEDIA_EXTENSIONS: Record<StudioMediaType, Set<string>> = {
+	image: new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tif', 'tiff']),
+	video: new Set(['mp4', 'mov', 'webm', 'avi', 'mkv', 'm4v', 'ogv']),
+	audio: new Set(['mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac', 'opus'])
+};
 
 export class OwuiClient {
 	private readonly baseUrl: URL;
@@ -129,20 +150,142 @@ export class OwuiClient {
 		const root = object(payload, requestId);
 		return {
 			items: array(root.items, requestId).map((entry) => {
-				const file = object(entry, requestId);
-				const meta = this.optionalObject(file.meta);
-				return {
-					id: string(file.id, requestId),
-					filename: string(file.filename, requestId),
-					contentType: nullableString(meta?.content_type, requestId),
-					size: nullableNumber(meta?.size, requestId),
-					createdAt: number(file.created_at, requestId),
-					updatedAt: nullableNumber(file.updated_at, requestId)
-				};
+				return this.fileSummary(object(entry, requestId), requestId);
 			}),
 			total: number(root.total, requestId),
 			page
 		};
+	}
+
+	async listMedia(
+		ownerId: string,
+		cursor: string | null = null,
+		limit = 24
+	): Promise<StudioMediaPage> {
+		this.owner(ownerId);
+		this.limit(limit);
+		let position = this.cursor(cursor, 'list');
+		let scanned = 0;
+		const items: StudioMediaSummary[] = [];
+		let total = Number.POSITIVE_INFINITY;
+
+		while (items.length < limit && position < total && scanned < MEDIA_SCAN_LIMIT) {
+			const page = Math.floor(position / OWUI_FILE_PAGE_SIZE) + 1;
+			const offset = position % OWUI_FILE_PAGE_SIZE;
+			const result = await this.listFiles(page);
+			total = result.total;
+			const candidates = result.items.slice(offset);
+			if (candidates.length === 0) break;
+
+			for (const file of candidates) {
+				position += 1;
+				scanned += 1;
+				const media = this.mediaSummary(file);
+				if (file.ownerId === ownerId && media) items.push(media);
+				if (items.length === limit || scanned === MEDIA_SCAN_LIMIT) break;
+			}
+		}
+
+		return {
+			items,
+			nextCursor: position < total ? this.encodeCursor('list', position) : null
+		};
+	}
+
+	async searchMedia(
+		ownerId: string,
+		query: string,
+		cursor: string | null = null,
+		limit = 24
+	): Promise<StudioMediaPage> {
+		this.owner(ownerId);
+		this.limit(limit);
+		const normalizedQuery = query.trim();
+		const hasUnsupportedCharacter = [...normalizedQuery].some(
+			(character) => character === '*' || character === '?' || character.charCodeAt(0) < 32
+		);
+		if (!normalizedQuery || normalizedQuery.length > 200 || hasUnsupportedCharacter)
+			throw new TypeError('query must be 1-200 characters without wildcard or control characters');
+
+		let position = this.cursor(cursor, 'search');
+		let scanned = 0;
+		let hasMore = true;
+		const items: StudioMediaSummary[] = [];
+		while (items.length < limit && hasMore && scanned < MEDIA_SCAN_LIMIT) {
+			let batch: OwuiFileSummary[];
+			try {
+				const params = new URLSearchParams({
+					filename: `*${normalizedQuery}*`,
+					content: 'false',
+					skip: String(position),
+					limit: String(OWUI_FILE_PAGE_SIZE)
+				});
+				const { payload, requestId } = await this.request(`api/v1/files/search?${params}`);
+				batch = array(payload, requestId).map((entry) =>
+					this.fileSummary(object(entry, requestId), requestId)
+				);
+			} catch (error) {
+				if (error instanceof OwuiError && error.code === 'not_found') batch = [];
+				else throw error;
+			}
+
+			if (batch.length === 0) {
+				hasMore = false;
+				break;
+			}
+			for (const file of batch) {
+				position += 1;
+				scanned += 1;
+				const media = this.mediaSummary(file);
+				if (file.ownerId === ownerId && media) items.push(media);
+				if (items.length === limit || scanned === MEDIA_SCAN_LIMIT) break;
+			}
+			if (batch.length < OWUI_FILE_PAGE_SIZE) hasMore = false;
+		}
+
+		return {
+			items,
+			nextCursor: hasMore ? this.encodeCursor('search', position) : null
+		};
+	}
+
+	async getOwnedMedia(id: string, ownerId: string): Promise<StudioMediaSummary> {
+		if (!id) throw new TypeError('id is required');
+		this.owner(ownerId);
+		const { payload, requestId } = await this.request(`api/v1/files/${encodeURIComponent(id)}`);
+		const file = this.fileSummary(object(payload, requestId), requestId);
+		const media = this.mediaSummary(file);
+		if (file.ownerId !== ownerId || !media) throw new OwuiError('not_found', 404, requestId);
+		return media;
+	}
+
+	async openMediaContent(
+		id: string,
+		ownerId: string,
+		disposition: 'preview' | 'download' = 'preview',
+		range?: string
+	): Promise<Response> {
+		const media = await this.getOwnedMedia(id, ownerId);
+		if (range !== undefined && !/^bytes=(?:\d+-\d*|\d*-\d+)$/.test(range))
+			throw new TypeError('range must contain one valid byte range');
+		const suffix = disposition === 'download' ? '?attachment=true' : '';
+		const response = await this.response(
+			`api/v1/files/${encodeURIComponent(id)}/content${suffix}`,
+			{ headers: { accept: '*/*', ...(range ? { range } : {}) } }
+		);
+		const headers = new Headers();
+		for (const [name, value] of response.headers) {
+			if (
+				MEDIA_RESPONSE_HEADERS.has(name.toLowerCase()) &&
+				!['content-disposition', 'content-type'].includes(name.toLowerCase())
+			)
+				headers.set(name, value);
+		}
+		headers.set('content-type', this.safeMediaContentType(media));
+		headers.set('content-disposition', this.contentDisposition(disposition, media.filename));
+		headers.set('content-security-policy', "default-src 'none'; sandbox");
+		headers.set('x-content-type-options', 'nosniff');
+		return new Response(response.body, { status: response.status, headers });
 	}
 
 	async listKnowledge(page = 1): Promise<OwuiPage<OwuiKnowledgeSummary>> {
@@ -196,6 +339,19 @@ export class OwuiClient {
 	}
 
 	private async request(path: string, options: RequestOptions = {}) {
+		const { response, requestId } = await this.responseWithId(path, options);
+		try {
+			return { payload: (await response.json()) as unknown, requestId };
+		} catch (error) {
+			throw new OwuiError('invalid_response', 502, requestId, { cause: error });
+		}
+	}
+
+	private async response(path: string, options: RequestOptions = {}) {
+		return (await this.responseWithId(path, options)).response;
+	}
+
+	private async responseWithId(path: string, options: RequestOptions = {}) {
 		const requestId = this.nextRequestId();
 		const method = options.method ?? 'GET';
 		const authenticated = options.authenticated ?? true;
@@ -205,6 +361,7 @@ export class OwuiClient {
 		for (let attempt = 1; attempt <= attempts; attempt += 1) {
 			try {
 				const headers = new Headers({ accept: 'application/json', 'x-request-id': requestId });
+				for (const [name, value] of Object.entries(options.headers ?? {})) headers.set(name, value);
 				if (authenticated) headers.set('authorization', `Bearer ${this.options.token}`);
 				if (options.body !== undefined) headers.set('content-type', 'application/json');
 				const response = await this.fetcher(new URL(path, this.baseUrl), {
@@ -217,7 +374,7 @@ export class OwuiClient {
 					if (attempt < attempts && [502, 503, 504].includes(response.status)) continue;
 					throw new OwuiError(mapOwuiStatus(response.status), response.status, requestId);
 				}
-				return { payload: (await response.json()) as unknown, requestId };
+				return { response, requestId };
 			} catch (error) {
 				if (error instanceof OwuiError) throw error;
 				if (attempt < attempts) continue;
@@ -225,6 +382,119 @@ export class OwuiClient {
 			}
 		}
 		throw new OwuiError('upstream_unavailable', 503, requestId);
+	}
+
+	private fileSummary(file: JsonObject, requestId: string): OwuiFileSummary {
+		const meta = this.optionalObject(file.meta);
+		return {
+			id: string(file.id, requestId),
+			ownerId: string(file.user_id, requestId),
+			filename: string(file.filename, requestId),
+			contentType: nullableString(meta?.content_type, requestId),
+			size: nullableNumber(meta?.size, requestId),
+			createdAt: number(file.created_at, requestId),
+			updatedAt: nullableNumber(file.updated_at, requestId)
+		};
+	}
+
+	private mediaSummary(file: OwuiFileSummary): StudioMediaSummary | null {
+		const mediaType = this.mediaType(file.contentType, file.filename);
+		if (!mediaType) return null;
+		return {
+			id: file.id,
+			filename: file.filename,
+			mediaType,
+			contentType: file.contentType,
+			size: file.size,
+			createdAt: file.createdAt,
+			updatedAt: file.updatedAt
+		};
+	}
+
+	private mediaType(contentType: string | null, filename: string): StudioMediaType | null {
+		const mimeType = contentType?.toLowerCase().split(';', 1)[0].trim() ?? '';
+		if (mimeType === 'image/svg+xml') return null;
+		const mimeMedia = (['image', 'video', 'audio'] as const).find((type) =>
+			mimeType.startsWith(`${type}/`)
+		);
+		const extension = filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+		const extensionMedia = (['image', 'video', 'audio'] as const).find(
+			(type) => extension !== undefined && MEDIA_EXTENSIONS[type].has(extension)
+		);
+		if (mimeMedia && extensionMedia && mimeMedia !== extensionMedia) return null;
+		if (mimeMedia) return mimeMedia;
+		if (mimeType) return null;
+		return extensionMedia ?? null;
+	}
+
+	private cursor(value: string | null, mode: 'list' | 'search'): number {
+		if (value === null) return 0;
+		if (value.length > 256) throw new TypeError('invalid cursor');
+		try {
+			const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as unknown;
+			const cursor = object(parsed, 'cursor');
+			if (
+				cursor.mode !== mode ||
+				!Number.isSafeInteger(cursor.position) ||
+				Number(cursor.position) < 0
+			)
+				throw new TypeError('invalid cursor');
+			return Number(cursor.position);
+		} catch (error) {
+			if (error instanceof TypeError) throw error;
+			throw new TypeError('invalid cursor', { cause: error });
+		}
+	}
+
+	private encodeCursor(mode: 'list' | 'search', position: number): string {
+		return Buffer.from(JSON.stringify({ mode, position }), 'utf8').toString('base64url');
+	}
+
+	private owner(ownerId: string) {
+		if (!ownerId) throw new TypeError('ownerId is required');
+	}
+
+	private limit(limit: number) {
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50)
+			throw new TypeError('limit must be an integer from 1 to 50');
+	}
+
+	private safeMediaContentType(media: StudioMediaSummary): string {
+		if (media.contentType) return media.contentType.toLowerCase().split(';', 1)[0].trim();
+		const extension = media.filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? '';
+		const fallbacks: Record<string, string> = {
+			png: 'image/png',
+			jpg: 'image/jpeg',
+			jpeg: 'image/jpeg',
+			gif: 'image/gif',
+			webp: 'image/webp',
+			bmp: 'image/bmp',
+			tif: 'image/tiff',
+			tiff: 'image/tiff',
+			mp4: 'video/mp4',
+			mov: 'video/quicktime',
+			webm: 'video/webm',
+			avi: 'video/x-msvideo',
+			mkv: 'video/x-matroska',
+			m4v: 'video/x-m4v',
+			ogv: 'video/ogg',
+			mp3: 'audio/mpeg',
+			wav: 'audio/wav',
+			m4a: 'audio/mp4',
+			ogg: 'audio/ogg',
+			flac: 'audio/flac',
+			aac: 'audio/aac',
+			opus: 'audio/opus'
+		};
+		return fallbacks[extension] ?? 'application/octet-stream';
+	}
+
+	private contentDisposition(disposition: 'preview' | 'download', filename: string): string {
+		const encoded = encodeURIComponent(filename).replace(
+			/[!'()*]/g,
+			(character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+		);
+		return `${disposition === 'download' ? 'attachment' : 'inline'}; filename*=UTF-8''${encoded}`;
 	}
 	private optionalObject(value: unknown): JsonObject | null {
 		return typeof value === 'object' && value !== null && !Array.isArray(value)
