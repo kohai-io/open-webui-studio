@@ -1,16 +1,5 @@
-import {
-	createAgent,
-	deleteAgent,
-	launchAgent,
-	launchChat,
-	loadCataloguePage
-} from '$lib/server/catalogue-page';
+import { launchChat, loadCataloguePage } from '$lib/server/catalogue-page';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = ({ locals }) => loadCataloguePage(locals);
-export const actions: Actions = {
-	launch: ({ locals, request }) => launchChat(locals, request),
-	launchAgent: ({ locals, request }) => launchAgent(locals, request),
-	createAgent: ({ locals, request }) => createAgent(locals, request),
-	deleteAgent: ({ locals, request }) => deleteAgent(locals, request)
-};
+export const actions: Actions = { launch: ({ locals, request }) => launchChat(locals, request) };
