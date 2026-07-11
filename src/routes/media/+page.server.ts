@@ -3,7 +3,7 @@ import type { PageServerLoad } from './$types';
 import { loadMedia, publicMediaError } from '$lib/server/media-page';
 import { getServices } from '$lib/server/services';
 
-export const load: PageServerLoad = async ({ locals, url }) => {
+export const load: PageServerLoad = async ({ locals, request, url }) => {
 	const query = (url.searchParams.get('q') ?? '').trim();
 	const cursor = url.searchParams.get('cursor');
 	if (query.length > 200) error(400, 'Search query is too long');
@@ -21,7 +21,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			getServices().owuiForToken(locals.session.owuiToken),
 			locals.session.owuiUserId,
 			query,
-			cursor
+			cursor,
+			request.signal
 		);
 		return { authenticated: true as const, state: 'ready' as const, query, ...page };
 	} catch (cause) {

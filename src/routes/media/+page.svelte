@@ -77,12 +77,22 @@
 
 		{#if data.items.length === 0}
 			<section class="state">
-				<h2>{data.query ? 'No matching media.' : 'No media yet.'}</h2>
+				<h2>
+					{data.nextCursor
+						? 'No media in this batch.'
+						: data.query
+							? 'No matching media.'
+							: 'No media yet.'}
+				</h2>
 				<p>
-					{data.query
-						? 'Try a different filename.'
-						: 'Media stored in Open WebUI will appear here.'}
+					{data.nextCursor
+						? 'Continue to scan the next bounded batch.'
+						: data.query
+							? 'Try a different filename.'
+							: 'Media stored in Open WebUI will appear here.'}
 				</p>
+				{#if data.nextCursor}<a class="next" href={resolve(`/media?${nextQuery()}`)}>Continue →</a
+					>{/if}
 			</section>
 		{:else}
 			<section class="grid" aria-label="Media results">
@@ -94,13 +104,9 @@
 							onclick={() => (previewItem = item)}
 							aria-label={`Preview ${item.filename}`}
 						>
-							{#if item.mediaType === 'image'}
-								<img src={contentUrl(item.id)} alt="" loading="lazy" />
-							{:else}
-								<span class="media-symbol" aria-hidden="true">
-									{item.mediaType === 'video' ? '▶' : '♪'}
-								</span>
-							{/if}
+							<span class="media-symbol" aria-hidden="true">
+								{item.mediaType === 'image' ? '▧' : item.mediaType === 'video' ? '▶' : '♪'}
+							</span>
 						</button>
 						<div class="details">
 							<h2 title={item.filename}>{item.filename}</h2>
@@ -299,11 +305,6 @@
 		background: #080a0d;
 		color: #6ee7b7;
 		cursor: pointer;
-	}
-	.preview img {
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
 	}
 	.media-symbol {
 		font-size: 3rem;

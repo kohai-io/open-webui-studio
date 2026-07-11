@@ -11,7 +11,8 @@ export const GET: RequestHandler = async ({ locals, params, request, url }) => {
 				params.id,
 				locals.session.owuiUserId,
 				url.searchParams.get('download') === '1' ? 'download' : 'preview',
-				request.headers.get('range') ?? undefined
+				request.headers.get('range') ?? undefined,
+				request.signal
 			);
 		response.headers.set('cache-control', 'private, no-store');
 		return response;

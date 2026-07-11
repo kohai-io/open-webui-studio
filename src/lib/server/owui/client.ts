@@ -38,6 +38,7 @@ interface RequestOptions {
 	authenticated?: boolean;
 	idempotent?: boolean;
 	headers?: Record<string, string>;
+	signal?: AbortSignal;
 }
 
 const OWUI_FILE_PAGE_SIZE = 50;
@@ -144,9 +145,11 @@ export class OwuiClient {
 		});
 	}
 
-	async listFiles(page = 1): Promise<OwuiPage<OwuiFileSummary>> {
+	async listFiles(page = 1, signal?: AbortSignal): Promise<OwuiPage<OwuiFileSummary>> {
 		this.page(page);
-		const { payload, requestId } = await this.request(`api/v1/files/?page=${page}&content=false`);
+		const { payload, requestId } = await this.request(`api/v1/files/?page=${page}&content=false`, {
+			signal
+		});
 		const root = object(payload, requestId);
 		return {
 			items: array(root.items, requestId).map((entry) => {
@@ -160,7 +163,8 @@ export class OwuiClient {
 	async listMedia(
 		ownerId: string,
 		cursor: string | null = null,
-		limit = 24
+		limit = 24,
+		signal?: AbortSignal
 	): Promise<StudioMediaPage> {
 		this.owner(ownerId);
 		this.limit(limit);
@@ -172,7 +176,7 @@ export class OwuiClient {
 		while (items.length < limit && position < total && scanned < MEDIA_SCAN_LIMIT) {
 			const page = Math.floor(position / OWUI_FILE_PAGE_SIZE) + 1;
 			const offset = position % OWUI_FILE_PAGE_SIZE;
-			const result = await this.listFiles(page);
+			const result = await this.listFiles(page, signal);
 			total = result.total;
 			const candidates = result.items.slice(offset);
 			if (candidates.length === 0) break;
@@ -196,7 +200,8 @@ export class OwuiClient {
 		ownerId: string,
 		query: string,
 		cursor: string | null = null,
-		limit = 24
+		limit = 24,
+		signal?: AbortSignal
 	): Promise<StudioMediaPage> {
 		this.owner(ownerId);
 		this.limit(limit);
@@ -220,7 +225,9 @@ export class OwuiClient {
 					skip: String(position),
 					limit: String(OWUI_FILE_PAGE_SIZE)
 				});
-				const { payload, requestId } = await this.request(`api/v1/files/search?${params}`);
+				const { payload, requestId } = await this.request(`api/v1/files/search?${params}`, {
+					signal
+				});
 				batch = array(payload, requestId).map((entry) =>
 					this.fileSummary(object(entry, requestId), requestId)
 				);
@@ -249,10 +256,16 @@ export class OwuiClient {
 		};
 	}
 
-	async getOwnedMedia(id: string, ownerId: string): Promise<StudioMediaSummary> {
+	async getOwnedMedia(
+		id: string,
+		ownerId: string,
+		signal?: AbortSignal
+	): Promise<StudioMediaSummary> {
 		if (!id) throw new TypeError('id is required');
 		this.owner(ownerId);
-		const { payload, requestId } = await this.request(`api/v1/files/${encodeURIComponent(id)}`);
+		const { payload, requestId } = await this.request(`api/v1/files/${encodeURIComponent(id)}`, {
+			signal
+		});
 		const file = this.fileSummary(object(payload, requestId), requestId);
 		const media = this.mediaSummary(file);
 		if (file.ownerId !== ownerId || !media) throw new OwuiError('not_found', 404, requestId);
@@ -263,15 +276,16 @@ export class OwuiClient {
 		id: string,
 		ownerId: string,
 		disposition: 'preview' | 'download' = 'preview',
-		range?: string
+		range?: string,
+		signal?: AbortSignal
 	): Promise<Response> {
-		const media = await this.getOwnedMedia(id, ownerId);
+		const media = await this.getOwnedMedia(id, ownerId, signal);
 		if (range !== undefined && !/^bytes=(?:\d+-\d*|\d*-\d+)$/.test(range))
 			throw new TypeError('range must contain one valid byte range');
 		const suffix = disposition === 'download' ? '?attachment=true' : '';
 		const response = await this.response(
 			`api/v1/files/${encodeURIComponent(id)}/content${suffix}`,
-			{ headers: { accept: '*/*', ...(range ? { range } : {}) } }
+			{ headers: { accept: '*/*', ...(range ? { range } : {}) }, signal }
 		);
 		const headers = new Headers();
 		for (const [name, value] of response.headers) {
@@ -368,7 +382,9 @@ export class OwuiClient {
 					method,
 					headers,
 					body: options.body === undefined ? undefined : JSON.stringify(options.body),
-					signal: AbortSignal.timeout(this.timeoutMs)
+					signal: options.signal
+						? AbortSignal.any([options.signal, AbortSignal.timeout(this.timeoutMs)])
+						: AbortSignal.timeout(this.timeoutMs)
 				});
 				if (!response.ok) {
 					if (attempt < attempts && [502, 503, 504].includes(response.status)) continue;
@@ -377,6 +393,7 @@ export class OwuiClient {
 				return { response, requestId };
 			} catch (error) {
 				if (error instanceof OwuiError) throw error;
+				if (options.signal?.aborted) throw error;
 				if (attempt < attempts) continue;
 				throw new OwuiError('upstream_unavailable', 503, requestId, { cause: error });
 			}

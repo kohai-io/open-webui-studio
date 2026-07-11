@@ -9,9 +9,12 @@ export async function loadMedia(
 	client: OwuiClient,
 	ownerId: string,
 	query: string,
-	cursor: string | null
+	cursor: string | null,
+	signal?: AbortSignal
 ): Promise<StudioMediaPage> {
-	return query ? client.searchMedia(ownerId, query, cursor) : client.listMedia(ownerId, cursor);
+	return query
+		? client.searchMedia(ownerId, query, cursor, 24, signal)
+		: client.listMedia(ownerId, cursor, 24, signal);
 }
 
 export function publicMediaError(

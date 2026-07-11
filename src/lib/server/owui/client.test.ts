@@ -232,4 +232,74 @@ describe('OwuiClient', () => {
 			expect.objectContaining({ id: 'fallback', mediaType: 'audio', contentType: null })
 		]);
 	});
+
+	it('scans representative mixed libraries in bounded sequential batches', async () => {
+		const files = Array.from({ length: 1_250 }, (_, index) => ({
+			id: `other-${index}`,
+			userId: 'user-b',
+			filename: `document-${index}.txt`,
+			contentType: 'text/plain'
+		}));
+		files[520] = {
+			id: 'owned-image',
+			userId: 'admin-a',
+			filename: 'owned-image.png',
+			contentType: 'image/png'
+		};
+		files[1_050] = {
+			id: 'owned-video',
+			userId: 'admin-a',
+			filename: 'owned-video.mp4',
+			contentType: 'video/mp4'
+		};
+		const stub = createOwuiStub({ userId: 'admin-a', role: 'admin', files });
+		let active = 0;
+		let maxActive = 0;
+		const fetch: typeof globalThis.fetch = async (input, init) => {
+			active += 1;
+			maxActive = Math.max(maxActive, active);
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 1));
+				return await stub.fetch(input, init);
+			} finally {
+				active -= 1;
+			}
+		};
+		const client = new OwuiClient({ ...stubClientOptions(fetch), token: 'admin-token' });
+
+		const first = await client.listMedia('admin-a');
+		expect(first.items).toEqual([]);
+		expect(first.nextCursor).not.toBeNull();
+		expect(stub.requests).toHaveLength(10);
+
+		const second = await client.listMedia('admin-a', first.nextCursor);
+		expect(second.items.map((item) => item.id)).toEqual(['owned-image']);
+		expect(second.nextCursor).not.toBeNull();
+
+		const third = await client.listMedia('admin-a', second.nextCursor);
+		expect(third.items.map((item) => item.id)).toEqual(['owned-video']);
+		expect(third.nextCursor).toBeNull();
+		expect(maxActive).toBe(1);
+		expect(stub.requests.length).toBeLessThanOrEqual(25);
+	});
+
+	it('propagates caller cancellation instead of retrying or remapping it', async () => {
+		const controller = new AbortController();
+		let attempts = 0;
+		const fetch: typeof globalThis.fetch = async (_input, init) => {
+			attempts += 1;
+			return await new Promise<Response>((_resolve, reject) => {
+				const signal = init?.signal;
+				if (!signal) return reject(new Error('signal missing'));
+				if (signal.aborted) return reject(signal.reason);
+				signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+			});
+		};
+		const client = new OwuiClient({ baseUrl: 'https://owui.test', token: 'user-token', fetch });
+
+		const pending = client.listMedia('user-a', null, 24, controller.signal);
+		controller.abort();
+		await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+		expect(attempts).toBe(1);
+	});
 });
