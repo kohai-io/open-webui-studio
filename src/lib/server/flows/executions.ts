@@ -258,7 +258,7 @@ export class FlowExecutionStore {
 	}
 
 	claimNext(workerId: string): FlowExecutionClaim | null {
-		identifier(workerId, '$.workerId', 128);
+		const safeWorkerId = identifier(workerId, '$.workerId', 128);
 		return this.options.database
 			.transaction(() => {
 				const active = this.options.database
@@ -287,12 +287,13 @@ export class FlowExecutionStore {
 				const changed = this.options.database
 					.prepare(
 						`UPDATE studio_flow_execution
-					 SET state = 'running', claim_token_hash = ?, claim_attempt = claim_attempt + 1,
+						 SET state = 'running', claimed_by = ?, claim_token_hash = ?,
+						     claim_attempt = claim_attempt + 1,
 					     claim_expires_at = ?, heartbeat_at = ?, started_at = COALESCE(started_at, ?),
 					     updated_at = ?
 					 WHERE id = ? AND state = 'queued'`
 					)
-					.run(hashClaim(claimToken), claimExpiresAt, now, now, now, candidate.id);
+					.run(safeWorkerId, hashClaim(claimToken), claimExpiresAt, now, now, now, candidate.id);
 				if (changed.changes !== 1) return null;
 				this.appendEvent(
 					candidate.id,

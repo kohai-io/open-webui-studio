@@ -135,8 +135,9 @@ describe('FlowExecutionStore', () => {
 		harness.queue('user-a', flow.id, 'run-b');
 		const claim = harness.executions.claimNext('worker-a')!;
 		const stored = harness.database
-			.prepare(`SELECT claim_token_hash FROM studio_flow_execution WHERE id = ?`)
-			.get(claim.id) as { claim_token_hash: string };
+			.prepare(`SELECT claimed_by, claim_token_hash FROM studio_flow_execution WHERE id = ?`)
+			.get(claim.id) as { claimed_by: string; claim_token_hash: string };
+		expect(stored.claimed_by).toBe('worker-a');
 		expect(stored.claim_token_hash).not.toBe(claim.claimToken);
 		expect(stored.claim_token_hash).toHaveLength(64);
 		expectExecutionError(() => harness.executions.heartbeat(claim.id, 'wrong-token'), 'lost_claim');

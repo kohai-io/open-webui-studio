@@ -42,6 +42,14 @@ Studio owns an independent SQLite database under `data/` by default. Numbered SQ
 
 Generic OIDC login, callback, and logout routes live under `/studio/auth`. They use discovery, Authorization Code + PKCE, state, nonce, single-use encrypted transactions, subject binding, and the upstream OWUI provider-token exchange. The core flow is provider-neutral for eventual Okta use; automated tests use an in-process fake provider and require no external IdP.
 
+## Flow execution
+
+Studio stores Flow definitions, immutable versions, encrypted execution payloads, ordered checkpoints, metadata-only events, and execution-bound OWUI credential leases in its own database. The in-process worker claims queued runs, refreshes heartbeats, evaluates supported text nodes, and calls the user-scoped OWUI completion adapter once per Model node.
+
+Set `FLOW_WORKER_ENABLED=false` for web-only replicas. Worker settings in `.env.example` control polling, claim and heartbeat timing, run and node deadlines, and the global claim limit. Assign each worker replica a distinct `FLOW_WORKER_ID`, and keep the heartbeat interval below the claim TTL.
+
+Authenticated APIs live under `/studio/api/flows` and `/studio/api/executions`. Mutations enforce same-origin browser requests, execution creation requires an `Idempotency-Key` header, and progress streams through owner-scoped server-sent events.
+
 ## Container
 
 The multi-stage Dockerfile builds on Node 22, installs production dependencies only in the runtime image, and runs as the unprivileged `studio` user. Its health endpoint is `/studio/health` and returns no configuration or secret values.

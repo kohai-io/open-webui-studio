@@ -68,11 +68,25 @@ describe('FlowStore', () => {
 				(upgraded.pragma('table_info(studio_flow_execution)') as Array<{ name: string }>).map(
 					(column) => column.name
 				)
-			).toEqual(expect.arrayContaining(['claim_token_hash', 'claim_attempt', 'claim_expires_at']));
+			).toEqual(
+				expect.arrayContaining([
+					'claim_token_hash',
+					'claim_attempt',
+					'claim_expires_at',
+					'claimed_by'
+				])
+			);
 			expect(
 				upgraded
 					.prepare(
 						"SELECT COUNT(*) AS count FROM studio_migration WHERE name = '0005_flow_execution_lifecycle.sql'"
+					)
+					.get()
+			).toEqual({ count: 1 });
+			expect(
+				upgraded
+					.prepare(
+						"SELECT COUNT(*) AS count FROM studio_migration WHERE name = '0006_flow_worker_identity.sql'"
 					)
 					.get()
 			).toEqual({ count: 1 });

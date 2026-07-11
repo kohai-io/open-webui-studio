@@ -129,6 +129,18 @@ export class FlowCredentialLeaseStore {
 		);
 	}
 
+	has(ownerOwuiUserId: string, executionId: string): boolean {
+		this.validateIdentity(ownerOwuiUserId, executionId);
+		return Boolean(
+			this.options.database
+				.prepare(
+					`SELECT 1 FROM studio_flow_credential_lease
+					 WHERE execution_id = ? AND owner_owui_user_id = ? AND expires_at > ?`
+				)
+				.get(executionId, ownerOwuiUserId, this.now())
+		);
+	}
+
 	deleteExpired(): number {
 		return this.options.database
 			.prepare('DELETE FROM studio_flow_credential_lease WHERE expires_at <= ?')
