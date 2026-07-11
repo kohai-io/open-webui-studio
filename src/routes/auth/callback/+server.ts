@@ -1,4 +1,4 @@
-import { redirect, error } from '@sveltejs/kit';
+import { redirect, error, isRedirect } from '@sveltejs/kit';
 import { getServices } from '$lib/server/services';
 import type { RequestHandler } from './$types';
 
@@ -21,7 +21,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		});
 		redirect(303, completed.returnPath);
 	} catch (cause) {
-		if (cause && typeof cause === 'object' && 'status' in cause) throw cause;
+		if (isRedirect(cause)) throw cause;
 		error(401, 'Authentication failed');
 	}
 };
