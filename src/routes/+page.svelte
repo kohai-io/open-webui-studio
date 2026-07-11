@@ -12,7 +12,8 @@
 >
 <main>
 	<nav>
-		<a class="brand" href={resolve('/')}>Studio</a><a href={resolve('/agents')}>Agents</a
+		<a class="brand" href={resolve('/')}>Studio</a><a href={resolve('/agents')}>Agents</a><a
+			href={resolve('/media')}>Media</a
 		>{#if data.authenticated}<form method="POST" action={resolve('/auth/logout')}>
 				<button>Sign out</button>
 			</form>{/if}
