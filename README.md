@@ -1,42 +1,47 @@
-# sv
+# Open WebUI Studio
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+Private companion application for Open WebUI. Studio owns product-specific state for agents, media timelines, and flows while Open WebUI remains authoritative for users, permissions, models, chats, files, and Knowledge.
 
-## Creating a project
+The initial integration contract is maintained in the adjacent Open WebUI repository at `docs/owui-studio-contract.md`.
 
-If you're seeing this, you've probably already done this step. Congrats!
+## Runtime
 
-```sh
-# create a new project
-npx sv create my-app
-```
+- Node.js `22.17.0` (see `.nvmrc`)
+- SvelteKit with TypeScript and `adapter-node`
+- Application base path: `/studio`
 
-To recreate this project with the same configuration:
+## Local development
 
-```sh
-# recreate this project
-npx sv@0.16.2 create --template minimal --types ts --add prettier eslint vitest="usages:unit" playwright sveltekit-adapter="adapter:node" --no-download-check --install npm .
-```
-
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
+```powershell
+nvm use
+npm ci
 npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
 ```
 
-## Building
+The shell is available at `http://localhost:5173/studio`. Copy `.env.example` to an ignored local environment file and supply secrets through your local secret mechanism.
 
-To create a production version of your app:
+## Verification
 
-```sh
+```powershell
+npm run format
+npm run lint
+npm run check
+npm run test:integration
 npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
 
-You can preview the production build with `npm run preview`.
+## Open WebUI adapter
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+`src/lib/server/owui` contains the server-only v0.10.2 adapter, normalized contracts, stable error mapping, and deterministic test stub. It covers OAuth token exchange, current identity, filtered models/agents, paginated files, paginated Knowledge, and chat creation. Mutations are never retried automatically; idempotent reads receive at most one transient retry.
+
+## Container
+
+The multi-stage Dockerfile builds on Node 22, installs production dependencies only in the runtime image, and runs as the unprivileged `studio` user. Its health endpoint is `/studio/health` and returns no configuration or secret values.
+
+## Security boundary
+
+- Never access the Open WebUI database, storage paths, or internal model classes.
+- Never expose provider tokens, Open WebUI JWTs, API keys, or administrator credentials to browser JavaScript or logs.
+- Resolve Open WebUI references through the typed, user-scoped server adapter and revalidate access at use time.
