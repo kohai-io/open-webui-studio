@@ -1,17 +1,23 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { untrack } from 'svelte';
-	import {
-		buildLinearFlowDefinition,
-		defaultLinearFlowDraft,
-		linearFlowDraftFromRecord,
-		updateLinearNodePosition,
-		type LinearFlowDraft,
-		type LinearNodeId
-	} from '$lib/flows/linear';
+	import { buildLinearFlowDefinition, defaultLinearFlowDraft } from '$lib/flows/linear';
 	import { nodeExecutionStateMap } from '$lib/flows/execution-state';
-	import type { FlowPositionV1 } from '$lib/flows/types';
+	import {
+		addFlowNode,
+		cloneFlowDefinition,
+		connectFlowNodes,
+		flowEditorIssues,
+		moveFlowNode,
+		removeFlowEdge,
+		removeFlowNode,
+		replaceFlowNode,
+		type AdmittedFlowNodeType
+	} from '$lib/flows/editor';
+	import type { FlowDefinitionV1, FlowNodeV1, FlowPositionV1 } from '$lib/flows/types';
+	import type { Connection } from '@xyflow/svelte';
 	import FlowCanvas from '$lib/components/flows/FlowCanvas.svelte';
+	import FlowNodeConfig from '$lib/components/flows/FlowNodeConfig.svelte';
 
 	let { data } = $props();
 	const initialData = untrack(() => data);
@@ -40,20 +46,16 @@
 		errorCode: string | null;
 	};
 
-	const initialDraft = initialData.selectedFlow
-		? linearFlowDraftFromRecord(initialData.selectedFlow)
-		: defaultLinearFlowDraft(initialData.models[0]?.id ?? '');
+	const starterDefinition = buildLinearFlowDefinition(
+		defaultLinearFlowDraft(initialData.models[0]?.id ?? '')
+	);
+	const initialDefinition = initialData.selectedFlow?.definition ?? starterDefinition;
 	let flows = $state<FlowSummary[]>([...initialData.flows]);
 	let selectedId = $state<string | null>(initialData.selectedFlow?.id ?? null);
 	let selectedFlow = $state<FlowRecord | null>(initialData.selectedFlow);
-	let draft = $state<LinearFlowDraft>(
-		initialDraft ?? {
-			...defaultLinearFlowDraft(initialData.models[0]?.id ?? ''),
-			name: initialData.selectedFlow?.name ?? '',
-			description: initialData.selectedFlow?.description ?? ''
-		}
-	);
-	let editable = $state(initialDraft !== null || initialData.selectedFlow === null);
+	let flowName = $state(initialData.selectedFlow?.name ?? '');
+	let flowDescription = $state(initialData.selectedFlow?.description ?? '');
+	let definition = $state<FlowDefinitionV1>(cloneFlowDefinition(initialDefinition));
 	let executions = $state<ExecutionSummary[]>(
 		initialData.selectedFlow
 			? initialData.executions.filter(
@@ -63,15 +65,35 @@
 	);
 	let currentExecution = $state<ExecutionRecord | null>(null);
 	let progress = $state<FlowEvent[]>([]);
-	let runInput = $state('');
+	let runInputs = $state<Record<string, string>>(initialRuntimeInputs(initialDefinition));
 	let saving = $state(false);
 	let running = $state(false);
 	let deleting = $state(false);
 	let message = $state('');
 	let errorMessage = $state('');
 	let eventSource: EventSource | null = null;
-	let selectedNodeId = $state<LinearNodeId>('model');
-	let canvasDefinition = $derived(buildLinearFlowDefinition(draft));
+	let selectedNodeId = $state<string | null>(
+		initialDefinition.nodes.find((node) => node.type === 'model')?.id ??
+			initialDefinition.nodes[0]?.id ??
+			null
+	);
+	let selectedEdgeId = $state<string | null>(null);
+	let graphIssues = $derived(flowEditorIssues(definition));
+	let selectedNode = $derived(definition.nodes.find((node) => node.id === selectedNodeId) ?? null);
+	let predecessorIds = $derived(
+		selectedNodeId
+			? definition.edges.filter((edge) => edge.target === selectedNodeId).map((edge) => edge.source)
+			: []
+	);
+	let hasRunInput = $derived(
+		(selectedFlow?.definition.nodes ?? [])
+			.filter((node) => node.type === 'input')
+			.every(
+				(node) =>
+					typeof runInputs[node.config.key] === 'string' &&
+					(runInputs[node.config.key].length > 0 || node.config.defaultValue !== undefined)
+			)
+	);
 	let executionByNodeId = $derived.by(() =>
 		nodeExecutionStateMap(currentExecution?.nodes ?? [], progress)
 	);
@@ -113,12 +135,15 @@
 		eventSource = null;
 		selectedId = null;
 		selectedFlow = null;
-		draft = defaultLinearFlowDraft(data.models[0]?.id ?? '');
+		flowName = '';
+		flowDescription = '';
+		definition = buildLinearFlowDefinition(defaultLinearFlowDraft(data.models[0]?.id ?? ''));
 		selectedNodeId = 'model';
-		editable = true;
+		selectedEdgeId = null;
 		executions = [];
 		currentExecution = null;
 		progress = [];
+		runInputs = initialRuntimeInputs(definition);
 		clearNotice();
 	}
 
@@ -133,17 +158,18 @@
 			]);
 			selectedId = id;
 			selectedFlow = flow;
-			const parsed = linearFlowDraftFromRecord(flow);
-			editable = parsed !== null;
-			draft = parsed ?? {
-				...defaultLinearFlowDraft(data.models[0]?.id ?? ''),
-				name: flow.name,
-				description: flow.description ?? ''
-			};
-			selectedNodeId = 'model';
+			flowName = flow.name;
+			flowDescription = flow.description ?? '';
+			definition = cloneFlowDefinition(flow.definition);
+			selectedNodeId =
+				definition.nodes.find((node) => node.type === 'model')?.id ??
+				definition.nodes[0]?.id ??
+				null;
+			selectedEdgeId = null;
 			executions = history.items;
 			currentExecution = null;
 			progress = [];
+			runInputs = initialRuntimeInputs(definition);
 		} catch (error) {
 			errorMessage = publicError(error);
 		}
@@ -151,9 +177,8 @@
 
 	async function saveFlow() {
 		clearNotice();
-		if (!editable) return;
-		if (!draft.prompt.includes('{{node.input.output}}')) {
-			errorMessage = 'Add {{node.input.output}} to the prompt template.';
+		if (graphIssues.length > 0) {
+			errorMessage = graphIssues[0];
 			return;
 		}
 		saving = true;
@@ -161,9 +186,9 @@
 			const creating = selectedFlow === null;
 			const body = {
 				...(selectedFlow ? { expectedRevision: selectedFlow.revision } : {}),
-				name: draft.name,
-				description: draft.description,
-				definition: buildLinearFlowDefinition(draft)
+				name: flowName,
+				description: flowDescription,
+				definition
 			};
 			const flow = await requestJson<FlowRecord>(
 				selectedFlow ? flowUrl(selectedFlow.id) : resolve('/api/flows'),
@@ -175,6 +200,8 @@
 			);
 			selectedId = flow.id;
 			selectedFlow = flow;
+			definition = cloneFlowDefinition(flow.definition);
+			runInputs = initialRuntimeInputs(flow.definition, runInputs);
 			const summary: FlowSummary = flow;
 			flows = [summary, ...flows.filter((item) => item.id !== flow.id)];
 			if (creating) executions = [];
@@ -207,7 +234,7 @@
 	}
 
 	async function runFlow() {
-		if (!selectedFlow || !editable) return;
+		if (!selectedFlow) return;
 		clearNotice();
 		running = true;
 		try {
@@ -217,7 +244,7 @@
 					'content-type': 'application/json',
 					'idempotency-key': crypto.randomUUID()
 				},
-				body: JSON.stringify({ inputs: { request: runInput } })
+				body: JSON.stringify({ inputs: runInputs })
 			});
 			currentExecution = execution;
 			progress = [];
@@ -295,19 +322,77 @@
 	}
 
 	function selectCanvasNode(nodeId: string) {
-		if (isLinearNodeId(nodeId)) selectedNodeId = nodeId;
+		selectedNodeId = definition.nodes.some((node) => node.id === nodeId) ? nodeId : null;
+		selectedEdgeId = null;
+	}
+
+	function selectCanvasEdge(edgeId: string) {
+		selectedEdgeId = definition.edges.some((edge) => edge.id === edgeId) ? edgeId : null;
+		selectedNodeId = null;
+	}
+
+	function clearCanvasSelection() {
+		selectedNodeId = null;
+		selectedEdgeId = null;
 	}
 
 	function updateCanvasPosition(nodeId: string, position: FlowPositionV1) {
-		if (isLinearNodeId(nodeId)) draft = updateLinearNodePosition(draft, nodeId, position);
+		definition = moveFlowNode(definition, nodeId, position);
 	}
 
-	function handleTransformChange() {
-		if (draft.transform === 'none' && selectedNodeId === 'transform') selectedNodeId = 'model';
+	function addCanvasNode(type: AdmittedFlowNodeType) {
+		clearNotice();
+		const result = addFlowNode(definition, type, data.models[0]?.id ?? '');
+		if (!result) {
+			errorMessage =
+				type === 'output'
+					? 'A Flow can contain exactly one Output node.'
+					: 'This Flow has reached the node limit.';
+			return;
+		}
+		definition = result.definition;
+		selectedNodeId = result.nodeId;
+		selectedEdgeId = null;
 	}
 
-	function isLinearNodeId(value: string): value is LinearNodeId {
-		return value === 'input' || value === 'model' || value === 'transform' || value === 'output';
+	function connectCanvasNodes(connection: Connection) {
+		clearNotice();
+		const result = connectFlowNodes(definition, connection);
+		if (result.error) {
+			errorMessage = result.error;
+			return;
+		}
+		definition = result.definition;
+	}
+
+	function updateCanvasNode(node: FlowNodeV1) {
+		definition = replaceFlowNode(definition, node);
+	}
+
+	function deleteCanvasNode(nodeId: string) {
+		const node = definition.nodes.find((candidate) => candidate.id === nodeId);
+		if (!node || !confirm(`Delete ${node.id}?`)) return;
+		definition = removeFlowNode(definition, nodeId);
+		clearCanvasSelection();
+	}
+
+	function deleteCanvasEdge(edgeId: string) {
+		definition = removeFlowEdge(definition, edgeId);
+		selectedEdgeId = null;
+	}
+
+	function initialRuntimeInputs(
+		value: FlowDefinitionV1,
+		existing: Record<string, string> = {}
+	): Record<string, string> {
+		return Object.fromEntries(
+			value.nodes
+				.filter((node) => node.type === 'input')
+				.map((node) => [
+					node.config.key,
+					existing[node.config.key] ?? node.config.defaultValue ?? ''
+				])
+		);
 	}
 
 	function formatOutput(value: unknown) {
@@ -352,7 +437,7 @@
 		<div>
 			<p class="eyebrow">Text workflows</p>
 			<h1>Flows</h1>
-			<p class="lede">Build a linear text workflow, run it in Studio, and follow each node.</p>
+			<p class="lede">Build a text graph, configure it on the canvas, and follow each node.</p>
 		</div>
 		{#if data.authenticated}<button class="primary" type="button" onclick={newFlow}>New flow</button
 			>{/if}
@@ -383,7 +468,7 @@
 						<span>{flows.length}</span>
 					</div>
 					{#if flows.length === 0}
-						<p class="muted">Create your first linear text Flow.</p>
+						<p class="muted">Create your first text Flow.</p>
 					{:else}
 						<div class="stack">
 							{#each flows as flow (flow.id)}
@@ -428,11 +513,11 @@
 			</aside>
 
 			<div class="main-column">
-				<section class="panel editor" aria-labelledby="flow-editor">
+				<section class="panel editor canvas-first" aria-labelledby="flow-editor">
 					<div class="panel-heading">
 						<div>
 							<p class="eyebrow">{selectedFlow ? 'Editor' : 'New flow'}</p>
-							<h2 id="flow-editor">{selectedFlow?.name ?? 'Linear text flow'}</h2>
+							<h2 id="flow-editor">{selectedFlow?.name ?? 'Text flow'}</h2>
 						</div>
 						{#if selectedFlow}
 							<button
@@ -444,98 +529,64 @@
 						{/if}
 					</div>
 
-					{#if !editable}
-						<div class="read-only">
-							<h3>This Flow uses a graph outside the first editor.</h3>
-							<p>Its history remains available. Create a new linear Flow to edit and run here.</p>
-						</div>
-					{:else}
-						<form
-							onsubmit={(event) => {
-								event.preventDefault();
-								void saveFlow();
-							}}
-						>
-							<label>Flow name<input bind:value={draft.name} required maxlength="120" /></label>
+					<form
+						onsubmit={(event) => {
+							event.preventDefault();
+							void saveFlow();
+						}}
+					>
+						<div class="flow-metadata">
+							<label>Flow name<input bind:value={flowName} required maxlength="120" /></label>
 							<label
-								>Description<textarea bind:value={draft.description} rows="2" maxlength="1000"
+								>Description<textarea bind:value={flowDescription} rows="1" maxlength="1000"
 								></textarea></label
 							>
-							<div class="topology-setting">
-								<label
-									>Optional transform<select
-										bind:value={draft.transform}
-										onchange={handleTransformChange}
-									>
-										<option value="none">None</option>
-										<option value="trim">Trim whitespace</option>
-										<option value="uppercase">Uppercase</option>
-										<option value="lowercase">Lowercase</option>
-									</select></label
-								>
-								<p>Topology is locked to Input → Model → optional Transform → Output.</p>
-							</div>
-
-							<div class="canvas-editor">
-								<FlowCanvas
-									definition={canvasDefinition}
-									{executionByNodeId}
-									onselect={selectCanvasNode}
-									onpositionchange={updateCanvasPosition}
-								/>
-								<section class="node-config" aria-labelledby="node-configuration">
-									<p class="eyebrow">Selected node</p>
-									<h3 id="node-configuration">
-										{selectedNodeId[0].toUpperCase() + selectedNodeId.slice(1)} configuration
-									</h3>
-									{#if selectedNodeId === 'model'}
-										<label
-											>Model<select
-												bind:value={draft.modelId}
-												required
-												disabled={data.models.length === 0}
-											>
-												<option value="" disabled>Select a model</option>
-												{#each data.models as model (model.id)}<option value={model.id}
-														>{model.name}</option
-													>{/each}
-											</select></label
-										>
-										<label
-											>Prompt template<textarea
-												bind:value={draft.prompt}
-												rows="8"
-												required
-												maxlength="32768"></textarea>
-											<small
-												>Use <code>{'{{node.input.output}}'}</code> where the run input should appear.</small
-											>
-										</label>
-									{:else if selectedNodeId === 'transform'}
-										<p class="muted">
-											{draft.transform === 'none'
-												? 'Enable a transform above to configure this node.'
-												: `This node applies ${draft.transform} to the model response.`}
-										</p>
-									{:else if selectedNodeId === 'input'}
-										<p class="muted">Run text enters through the fixed <code>request</code> key.</p>
-									{:else}
-										<p class="muted">The terminal result is returned as text.</p>
-									{/if}
-								</section>
-							</div>
-
 							<div class="form-actions">
-								<button class="primary" type="submit" disabled={saving || data.models.length === 0}
+								<button class="primary" type="submit" disabled={saving}
 									>{saving ? 'Saving…' : selectedFlow ? 'Save changes' : 'Create flow'}</button
 								>
 								{#if selectedFlow}<span>Revision {selectedFlow.revision}</span>{/if}
 							</div>
-						</form>
-					{/if}
+						</div>
+
+						{#if graphIssues.length > 0}
+							<div class="graph-feedback" role="status">
+								<strong>Finish wiring this Flow</strong>
+								<span>{graphIssues[0]}</span>
+							</div>
+						{/if}
+
+						<div class="canvas-editor">
+							<FlowCanvas
+								{definition}
+								{executionByNodeId}
+								{selectedNodeId}
+								{selectedEdgeId}
+								onselect={selectCanvasNode}
+								onselectedge={selectCanvasEdge}
+								onclearselection={clearCanvasSelection}
+								onpositionchange={updateCanvasPosition}
+								onconnectnodes={connectCanvasNodes}
+								onaddnode={addCanvasNode}
+								ondeleteedge={deleteCanvasEdge}
+							/>
+							{#if selectedNode}
+								<div class="node-config-overlay">
+									<FlowNodeConfig
+										node={selectedNode}
+										models={data.models}
+										{predecessorIds}
+										onupdate={updateCanvasNode}
+										ondelete={deleteCanvasNode}
+										onclose={clearCanvasSelection}
+									/>
+								</div>
+							{/if}
+						</div>
+					</form>
 				</section>
 
-				{#if selectedFlow && editable}
+				{#if selectedFlow}
 					<section class="panel runner" aria-labelledby="run-flow">
 						<div class="panel-heading">
 							<div>
@@ -546,18 +597,23 @@
 									>{currentExecution.state.replace('_', ' ')}</strong
 								>{/if}
 						</div>
-						<label
-							>Text input<textarea
-								bind:value={runInput}
-								rows="5"
-								maxlength="16384"
-								placeholder="Enter text for this run"></textarea></label
-						>
+						<div class="run-inputs">
+							{#each selectedFlow.definition.nodes.filter((node) => node.type === 'input') as node (node.id)}
+								<label
+									>{node.config.key}<textarea
+										bind:value={runInputs[node.config.key]}
+										rows="4"
+										maxlength="16384"
+										placeholder={node.config.defaultValue ?? 'Enter text for this input'}
+									></textarea></label
+								>
+							{/each}
+						</div>
 						<div class="form-actions">
 							<button
 								class="primary"
 								type="button"
-								disabled={running || !runInput}
+								disabled={running || !hasRunInput}
 								onclick={runFlow}>{running ? 'Running…' : 'Run flow'}</button
 							>
 							{#if currentExecution && activeStates.has(currentExecution.state)}
@@ -607,7 +663,7 @@
 		font-family: Inter, ui-sans-serif, system-ui, sans-serif;
 	}
 	main {
-		width: min(88rem, calc(100% - 3rem));
+		width: min(110rem, calc(100% - 3rem));
 		margin: auto;
 		padding: 1.5rem 0 5rem;
 	}
@@ -659,19 +715,14 @@
 		font-size: 1.35rem;
 		letter-spacing: -0.025em;
 	}
-	h3 {
-		margin: 0 0 0.5rem;
-	}
 	.lede,
 	.muted,
-	small,
-	.form-actions span,
-	.read-only p {
+	.form-actions span {
 		color: #929ca7;
 	}
 	.workspace {
 		display: grid;
-		grid-template-columns: minmax(15rem, 22rem) minmax(0, 1fr);
+		grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr);
 		gap: 1rem;
 		align-items: start;
 	}
@@ -734,8 +785,7 @@
 		font-size: 0.85rem;
 	}
 	input,
-	textarea,
-	select {
+	textarea {
 		width: 100%;
 		border: 1px solid #303944;
 		border-radius: 0.7rem;
@@ -749,15 +799,15 @@
 		line-height: 1.5;
 	}
 	input:focus,
-	textarea:focus,
-	select:focus {
+	textarea:focus {
 		outline: 2px solid #4d8b73;
 		outline-offset: 1px;
 	}
-	.two-fields {
+	.flow-metadata {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
+		grid-template-columns: minmax(12rem, 0.8fr) minmax(16rem, 1.4fr) auto;
 		gap: 1rem;
+		align-items: end;
 	}
 	.form-actions {
 		display: flex;
@@ -796,42 +846,34 @@
 		color: #ff9da8;
 		cursor: pointer;
 	}
-	.topology-setting {
+	.canvas-editor {
+		position: relative;
+	}
+	.node-config-overlay {
+		position: absolute;
+		z-index: 5;
+		top: 1rem;
+		right: 1rem;
+		bottom: 1rem;
+	}
+	.graph-feedback {
 		display: flex;
-		align-items: end;
-		justify-content: space-between;
-		gap: 1rem;
-		padding: 0.85rem 1rem;
-		border-radius: 0.75rem;
-		background: #0a0d10;
-	}
-	.topology-setting label {
-		min-width: 13rem;
-	}
-	.topology-setting p {
-		margin: 0 0 0.75rem;
-		color: #7f8a95;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.65rem 0.85rem;
+		border: 1px solid #64562d;
+		border-radius: 0.7rem;
+		background: #29220f;
+		color: #f8d477;
 		font-size: 0.78rem;
 	}
-	.canvas-editor {
+	.graph-feedback span {
+		color: #c8b775;
+	}
+	.run-inputs {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(15rem, 19rem);
+		grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
 		gap: 1rem;
-		align-items: stretch;
-	}
-	.node-config {
-		min-height: 24rem;
-		padding: 1rem;
-		border: 1px solid #252d35;
-		border-radius: 0.9rem;
-		background: #0b0f13;
-	}
-	.node-config h3 {
-		margin: 0.35rem 0 1.2rem;
-		text-transform: capitalize;
-	}
-	.node-config label + label {
-		margin-top: 1rem;
 	}
 	.node-list {
 		display: grid;
@@ -909,15 +951,11 @@
 		background: #2b171b;
 		color: #ffc5cc;
 	}
-	.empty-state,
-	.read-only {
+	.empty-state {
 		padding: 2rem;
 		border: 1px solid #252d35;
 		border-radius: 1rem;
 		background: #11151a;
-	}
-	code {
-		color: #a7f3d0;
 	}
 	@media (max-width: 820px) {
 		main {
@@ -932,11 +970,16 @@
 		.page-header {
 			align-items: start;
 		}
-		.canvas-editor {
-			grid-template-columns: 1fr;
+		.flow-metadata {
+			grid-template-columns: 1fr 1fr;
 		}
-		.node-config {
-			min-height: auto;
+		.flow-metadata .form-actions {
+			grid-column: 1 / -1;
+		}
+		.node-config-overlay {
+			top: auto;
+			left: 1rem;
+			max-height: 70%;
 		}
 	}
 	@media (max-width: 600px) {
@@ -952,12 +995,11 @@
 			flex-direction: column;
 		}
 		aside,
-		.two-fields {
+		.flow-metadata {
 			grid-template-columns: 1fr;
 		}
-		.topology-setting {
-			align-items: stretch;
-			flex-direction: column;
+		.flow-metadata .form-actions {
+			grid-column: auto;
 		}
 		.panel {
 			padding: 1rem;

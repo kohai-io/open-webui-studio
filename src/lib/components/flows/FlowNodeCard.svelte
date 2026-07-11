@@ -2,13 +2,13 @@
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import type { FlowCanvasNode } from '$lib/flows/canvas';
 
-	let { data }: NodeProps<FlowCanvasNode> = $props();
+	let { data, isConnectable }: NodeProps<FlowCanvasNode> = $props();
 	let state = $derived(data.execution?.state ?? 'idle');
 </script>
 
 <article class:has-state={state !== 'idle'} class={`state-${state}`}>
 	{#if data.definition.type !== 'input'}
-		<Handle type="target" position={Position.Left} isConnectable={false} />
+		<Handle type="target" position={Position.Left} {isConnectable} />
 	{/if}
 	<div class="heading">
 		<span class="kind">{data.label}</span>
@@ -19,7 +19,7 @@
 		<small>{data.execution.errorCode.replaceAll('_', ' ')}</small>
 	{/if}
 	{#if data.definition.type !== 'output'}
-		<Handle type="source" position={Position.Right} isConnectable={false} />
+		<Handle type="source" position={Position.Right} {isConnectable} />
 	{/if}
 </article>
 

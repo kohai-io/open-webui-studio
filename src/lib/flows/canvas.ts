@@ -17,9 +17,15 @@ export interface FlowCanvasView {
 	edges: FlowCanvasEdge[];
 }
 
+export interface FlowCanvasSelection {
+	nodeId: string | null;
+	edgeId: string | null;
+}
+
 export function flowDefinitionToCanvas(
 	definition: FlowDefinitionV1,
-	executionByNodeId: ReadonlyMap<string, FlowExecutionNodeView> = new Map()
+	executionByNodeId: ReadonlyMap<string, FlowExecutionNodeView> = new Map(),
+	selection: FlowCanvasSelection = { nodeId: null, edgeId: null }
 ): FlowCanvasView {
 	return {
 		nodes: definition.nodes.map((node) => ({
@@ -33,14 +39,16 @@ export function flowDefinitionToCanvas(
 				execution: executionByNodeId.get(node.id) ?? null
 			},
 			ariaLabel: `${nodeLabel(node)} node`,
-			focusable: true
+			focusable: true,
+			selected: selection.nodeId === node.id
 		})),
 		edges: definition.edges.map((edge) => ({
 			id: edge.id,
 			type: 'default',
 			source: edge.source,
 			target: edge.target,
-			focusable: false
+			focusable: true,
+			selected: selection.edgeId === edge.id
 		}))
 	};
 }

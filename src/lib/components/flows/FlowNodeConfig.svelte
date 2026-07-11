@@ -1,0 +1,311 @@
+<script lang="ts">
+	import type { FlowNodeV1, FlowTransformConfigV1 } from '$lib/flows/types';
+
+	interface ModelOption {
+		id: string;
+		name: string;
+	}
+
+	interface Props {
+		node: FlowNodeV1;
+		models: ModelOption[];
+		predecessorIds: string[];
+		onupdate: (node: FlowNodeV1) => void;
+		ondelete: (nodeId: string) => void;
+		onclose: () => void;
+	}
+
+	let { node, models, predecessorIds, onupdate, ondelete, onclose }: Props = $props();
+
+	function inputValue(event: Event): string {
+		return (event.currentTarget as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement)
+			.value;
+	}
+
+	function optionalNumber(event: Event): number | undefined {
+		const value = inputValue(event);
+		return value === '' ? undefined : Number(value);
+	}
+
+	function transformConfig(operation: string): FlowTransformConfigV1 {
+		if (operation === 'uppercase' || operation === 'lowercase' || operation === 'trim')
+			return { operation };
+		if (operation === 'replace') return { operation, search: '', replacement: '' };
+		if (operation === 'extract') return { operation, path: 'value' };
+		const predecessor = predecessorIds[0] ?? 'input';
+		return { operation: 'template', template: `{{node.${predecessor}.output}}` };
+	}
+
+	function updateReplace(field: 'search' | 'replacement', value: string) {
+		if (node.type !== 'transform' || node.config.operation !== 'replace') return;
+		onupdate({ ...node, config: { ...node.config, [field]: value } });
+	}
+
+	function updateExtractPath(path: string) {
+		if (node.type !== 'transform' || node.config.operation !== 'extract') return;
+		onupdate({ ...node, config: { ...node.config, path } });
+	}
+
+	function updateTemplate(template: string) {
+		if (node.type !== 'transform' || node.config.operation !== 'template') return;
+		onupdate({ ...node, config: { ...node.config, template } });
+	}
+</script>
+
+<section class="config" aria-labelledby="node-configuration">
+	<header>
+		<div>
+			<p>Selected node</p>
+			<h3 id="node-configuration">{node.type} settings</h3>
+			<code>{node.id}</code>
+		</div>
+		<button class="close" type="button" aria-label="Close node settings" onclick={onclose}>×</button
+		>
+	</header>
+
+	{#if node.type === 'input'}
+		<label
+			>Input key<input
+				value={node.config.key}
+				required
+				maxlength="64"
+				oninput={(event) =>
+					onupdate({ ...node, config: { ...node.config, key: inputValue(event) } })}
+			/></label
+		>
+		<label
+			>Default value<textarea
+				value={node.config.defaultValue ?? ''}
+				rows="5"
+				maxlength="16384"
+				oninput={(event) => {
+					const value = inputValue(event);
+					onupdate({
+						...node,
+						config: {
+							key: node.config.key,
+							...(value === '' ? {} : { defaultValue: value })
+						}
+					});
+				}}></textarea></label
+		>
+	{:else if node.type === 'model'}
+		<label
+			>Model<select
+				value={node.config.modelId}
+				required
+				disabled={models.length === 0}
+				onchange={(event) =>
+					onupdate({ ...node, config: { ...node.config, modelId: inputValue(event) } })}
+			>
+				<option value="" disabled>Select a model</option>
+				{#each models as model (model.id)}<option value={model.id}>{model.name}</option>{/each}
+			</select></label
+		>
+		<label
+			>Prompt template<textarea
+				value={node.config.prompt}
+				rows="8"
+				required
+				maxlength="32768"
+				oninput={(event) =>
+					onupdate({ ...node, config: { ...node.config, prompt: inputValue(event) } })}></textarea>
+			<small>Reference earlier output with <code>{'{{node.<id>.output}}'}</code>.</small></label
+		>
+		<div class="numbers">
+			<label
+				>Temperature<input
+					type="number"
+					min="0"
+					max="2"
+					step="0.1"
+					value={node.config.temperature ?? ''}
+					oninput={(event) => {
+						const temperature = optionalNumber(event);
+						onupdate({
+							...node,
+							config: {
+								...node.config,
+								...(temperature === undefined ? { temperature: undefined } : { temperature })
+							}
+						});
+					}}
+				/></label
+			>
+			<label
+				>Max tokens<input
+					type="number"
+					min="1"
+					max="32768"
+					step="1"
+					value={node.config.maxTokens ?? ''}
+					oninput={(event) => {
+						const maxTokens = optionalNumber(event);
+						onupdate({
+							...node,
+							config: {
+								...node.config,
+								...(maxTokens === undefined ? { maxTokens: undefined } : { maxTokens })
+							}
+						});
+					}}
+				/></label
+			>
+		</div>
+	{:else if node.type === 'transform'}
+		<label
+			>Operation<select
+				value={node.config.operation}
+				onchange={(event) => onupdate({ ...node, config: transformConfig(inputValue(event)) })}
+			>
+				<option value="trim">Trim whitespace</option>
+				<option value="uppercase">Uppercase</option>
+				<option value="lowercase">Lowercase</option>
+				<option value="replace">Replace text</option>
+				<option value="extract">Extract JSON path</option>
+				<option value="template">Template</option>
+			</select></label
+		>
+		{#if node.config.operation === 'replace'}
+			<label
+				>Search<input
+					value={node.config.search}
+					required
+					maxlength="1024"
+					oninput={(event) => updateReplace('search', inputValue(event))}
+				/></label
+			>
+			<label
+				>Replacement<input
+					value={node.config.replacement}
+					maxlength="4096"
+					oninput={(event) => updateReplace('replacement', inputValue(event))}
+				/></label
+			>
+		{:else if node.config.operation === 'extract'}
+			<label
+				>JSON path<input
+					value={node.config.path}
+					required
+					maxlength="256"
+					placeholder="result.summary"
+					oninput={(event) => updateExtractPath(inputValue(event))}
+				/></label
+			>
+		{:else if node.config.operation === 'template'}
+			<label
+				>Template<textarea
+					value={node.config.template}
+					rows="7"
+					required
+					maxlength="32768"
+					oninput={(event) => updateTemplate(inputValue(event))}></textarea></label
+			>
+		{/if}
+	{:else}
+		<label
+			>Output format<select
+				value={node.config.format}
+				onchange={(event) => {
+					const format = inputValue(event) === 'json' ? 'json' : 'text';
+					onupdate({ ...node, config: { format } });
+				}}
+			>
+				<option value="text">Text</option>
+				<option value="json">JSON</option>
+			</select></label
+		>
+	{/if}
+
+	<footer>
+		<button class="delete" type="button" onclick={() => ondelete(node.id)}>Delete node</button>
+	</footer>
+</section>
+
+<style>
+	.config {
+		display: grid;
+		gap: 1rem;
+		width: min(21rem, calc(100vw - 4rem));
+		max-height: calc(100% - 2rem);
+		overflow-y: auto;
+		padding: 1rem;
+		border: 1px solid #34413c;
+		border-radius: 0.9rem;
+		background: rgba(11, 15, 19, 0.97);
+		box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.45);
+	}
+	header {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+	header p {
+		margin: 0;
+		color: #6ee7b7;
+		font-size: 0.65rem;
+		font-weight: 800;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+	}
+	h3 {
+		margin: 0.3rem 0 0.35rem;
+		text-transform: capitalize;
+	}
+	header code {
+		color: #8d98a3;
+		font-size: 0.72rem;
+	}
+	.close {
+		border: 0;
+		background: transparent;
+		color: #aeb6bf;
+		font-size: 1.5rem;
+		cursor: pointer;
+	}
+	label {
+		display: grid;
+		gap: 0.4rem;
+		color: #c7ced5;
+		font-size: 0.8rem;
+	}
+	input,
+	textarea,
+	select {
+		width: 100%;
+		border: 1px solid #303944;
+		border-radius: 0.6rem;
+		background: #070a0d;
+		color: #f5f7f8;
+		padding: 0.65rem 0.72rem;
+		font: inherit;
+	}
+	textarea {
+		resize: vertical;
+		line-height: 1.45;
+	}
+	small {
+		color: #8d98a3;
+		line-height: 1.4;
+	}
+	.numbers {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.7rem;
+	}
+	footer {
+		padding-top: 0.2rem;
+		border-top: 1px solid #252d35;
+	}
+	.delete {
+		border: 1px solid #743b45;
+		border-radius: 999px;
+		background: #2b171b;
+		color: #ffc5cc;
+		padding: 0.6rem 0.8rem;
+		font: inherit;
+		font-weight: 700;
+		cursor: pointer;
+	}
+</style>
