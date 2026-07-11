@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { normaliseEpochMilliseconds } from '$lib/server/time';
 import type {
 	OwuiChat,
 	OwuiFileSummary,
@@ -83,7 +84,7 @@ export class OwuiClient {
 		return {
 			...this.user(value, requestId),
 			token: string(value.token, requestId),
-			expiresAt: nullableNumber(value.expires_at, requestId)
+			expiresAt: normaliseEpochMilliseconds(nullableNumber(value.expires_at, requestId))
 		};
 	}
 

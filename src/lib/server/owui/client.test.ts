@@ -11,7 +11,8 @@ describe('OwuiClient', () => {
 		});
 		await expect(client.exchangeToken('oidc', 'provider-secret')).resolves.toMatchObject({
 			id: 'user-a',
-			token: 'owui-token-user-a'
+			token: 'owui-token-user-a',
+			expiresAt: 2_000_000_000_000
 		});
 		const request = stub.requests[0];
 		expect(request.url).not.toContain('provider-secret');

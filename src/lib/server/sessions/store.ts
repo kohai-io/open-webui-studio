@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { StudioDatabase } from '$lib/server/database/database';
 import { decryptJson, encryptJson } from './crypto';
+import { normaliseEpochMilliseconds } from '$lib/server/time';
 
 export interface SessionPayload {
 	issuer: string;
@@ -54,6 +55,10 @@ export class SessionStore {
 	create(payload: SessionPayload): StoredSession {
 		this.bindIdentity(payload.issuer, payload.subject, payload.owuiUserId);
 		const now = this.now();
+		const normalisedPayload = {
+			...payload,
+			owuiTokenExpiresAt: normaliseEpochMilliseconds(payload.owuiTokenExpiresAt)
+		};
 		const handle = randomBytes(32).toString('base64url');
 		const expiresAt = now + this.absoluteTtlMs;
 		const idleExpiresAt = Math.min(expiresAt, now + this.idleTtlMs);
@@ -65,13 +70,13 @@ export class SessionStore {
 			)
 			.run(
 				this.hash(handle),
-				encryptJson(payload, this.options.encryptionKey),
+				encryptJson(normalisedPayload, this.options.encryptionKey),
 				expiresAt,
 				idleExpiresAt,
 				now,
 				now
 			);
-		return { ...payload, handle, expiresAt, idleExpiresAt };
+		return { ...normalisedPayload, handle, expiresAt, idleExpiresAt };
 	}
 
 	get(handle: string): StoredSession | null {
@@ -91,8 +96,10 @@ export class SessionStore {
 		this.options.database
 			.prepare('UPDATE studio_session SET idle_expires_at = ?, updated_at = ? WHERE id_hash = ?')
 			.run(idleExpiresAt, now, this.hash(handle));
+		const payload = decryptJson<SessionPayload>(row.encrypted_payload, this.options.encryptionKey);
 		return {
-			...decryptJson<SessionPayload>(row.encrypted_payload, this.options.encryptionKey),
+			...payload,
+			owuiTokenExpiresAt: normaliseEpochMilliseconds(payload.owuiTokenExpiresAt),
 			handle,
 			expiresAt: row.expires_at,
 			idleExpiresAt

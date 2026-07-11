@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { openStudioDatabase } from '$lib/server/database/database';
+import { encryptJson } from './crypto';
 import { SessionStore, type SessionPayload } from './store';
 
 const payload: SessionPayload = {
@@ -23,7 +24,10 @@ describe('SessionStore', () => {
 
 		expect(row.id_hash).not.toContain(session.handle);
 		expect(row.encrypted_payload).not.toContain(payload.owuiToken);
-		expect(store.get(session.handle)).toMatchObject(payload);
+		expect(store.get(session.handle)).toMatchObject({
+			...payload,
+			owuiTokenExpiresAt: 2_000_000_000_000
+		});
 		expect(() => openStudioDatabase(':memory:')).not.toThrow();
 		database.close();
 	});
@@ -44,6 +48,19 @@ describe('SessionStore', () => {
 		expect(store.get(first.handle)).toBeNull();
 		now = 1_101;
 		expect(store.get(rotated!.handle)).toBeNull();
+		database.close();
+	});
+
+	it('normalises token expiry from existing sessions that stored Unix seconds', () => {
+		const database = openStudioDatabase(':memory:');
+		const encryptionKey = randomBytes(32);
+		const store = new SessionStore({ database, encryptionKey });
+		const session = store.create({ ...payload, owuiTokenExpiresAt: null });
+		database
+			.prepare('UPDATE studio_session SET encrypted_payload = ?')
+			.run(encryptJson(payload, encryptionKey));
+
+		expect(store.get(session.handle)?.owuiTokenExpiresAt).toBe(2_000_000_000_000);
 		database.close();
 	});
 
