@@ -47,6 +47,7 @@ interface RequestOptions {
 const OWUI_FILE_PAGE_SIZE = 50;
 const MEDIA_SCAN_LIMIT = 500;
 const TEXT_COMPLETION_MAX_CONTENT_LENGTH = 1024 * 1024;
+const TEXT_COMPLETION_MAX_STREAM_BYTES = 4 * TEXT_COMPLETION_MAX_CONTENT_LENGTH;
 const MEDIA_RESPONSE_HEADERS = new Set([
 	'accept-ranges',
 	'content-disposition',
@@ -386,25 +387,96 @@ export class OwuiClient {
 		};
 		// Omitting parent_id, chat_id, user_message, and session_id selects the pinned v0.10.2
 		// direct API path. Adding parent_id: null would invoke OWUI chat-management behavior.
-		const { payload, requestId } = await this.request('api/chat/completions', {
+		const { response, requestId } = await this.responseWithId('api/chat/completions', {
 			method: 'POST',
+			headers: { accept: 'text/event-stream' },
 			body: {
 				model: input.modelId,
 				messages: [{ role: 'user', content: input.prompt }],
-				stream: false,
+				stream: true,
 				...(Object.keys(params).length === 0 ? {} : { params })
 			},
 			signal: input.signal
 		});
-		const root = object(payload, requestId);
-		const choices = array(root.choices, requestId);
-		if (choices.length !== 1) throw new OwuiError('invalid_response', 502, requestId);
-		const choice = object(choices[0], requestId);
-		const message = object(choice.message, requestId);
-		const content = string(message.content, requestId);
+		const content = await this.readCompletionStream(response, requestId, input.signal);
 		if (!content.trim() || content.length > TEXT_COMPLETION_MAX_CONTENT_LENGTH)
 			throw new OwuiError('invalid_response', 502, requestId);
 		return { modelId: input.modelId, content, requestId };
+	}
+
+	private async readCompletionStream(
+		response: Response,
+		requestId: string,
+		callerSignal?: AbortSignal
+	): Promise<string> {
+		if (!response.body) throw new OwuiError('invalid_response', 502, requestId);
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = '';
+		let content = '';
+		let bytes = 0;
+		let finished = false;
+		const consumeLine = (rawLine: string) => {
+			const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+			if (!line.startsWith('data:')) return;
+			const data = line.slice(5).trimStart();
+			if (data === '[DONE]') {
+				finished = true;
+				return;
+			}
+			if (finished || data === '') return;
+			let payload: unknown;
+			try {
+				payload = JSON.parse(data);
+			} catch (error) {
+				throw new OwuiError('invalid_response', 502, requestId, { cause: error });
+			}
+			const root = object(payload, requestId);
+			const choices = array(root.choices, requestId);
+			if (choices.length === 0) return;
+			if (choices.length !== 1) throw new OwuiError('invalid_response', 502, requestId);
+			const choice = object(choices[0], requestId);
+			const delta = object(choice.delta, requestId);
+			if (delta.content === undefined || delta.content === null) return;
+			content += string(delta.content, requestId);
+			if (content.length > TEXT_COMPLETION_MAX_CONTENT_LENGTH)
+				throw new OwuiError('invalid_response', 502, requestId);
+		};
+
+		try {
+			while (!finished) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				bytes += value.byteLength;
+				if (bytes > TEXT_COMPLETION_MAX_STREAM_BYTES)
+					throw new OwuiError('invalid_response', 502, requestId);
+				buffer += decoder.decode(value, { stream: true });
+				let newline = buffer.indexOf('\n');
+				while (newline >= 0) {
+					consumeLine(buffer.slice(0, newline));
+					buffer = buffer.slice(newline + 1);
+					newline = buffer.indexOf('\n');
+				}
+				if (buffer.length > TEXT_COMPLETION_MAX_STREAM_BYTES)
+					throw new OwuiError('invalid_response', 502, requestId);
+			}
+			buffer += decoder.decode();
+			if (buffer) consumeLine(buffer);
+			if (!finished) throw new OwuiError('invalid_response', 502, requestId);
+			return content;
+		} catch (error) {
+			if (error instanceof OwuiError) throw error;
+			if (callerSignal?.aborted) throw callerSignal.reason;
+			if (
+				error instanceof DOMException &&
+				(error.name === 'TimeoutError' || error.name === 'AbortError')
+			)
+				throw new OwuiError('timeout', 504, requestId, { cause: error });
+			throw new OwuiError('upstream_unavailable', 503, requestId, { cause: error });
+		} finally {
+			await reader.cancel().catch(() => {});
+			reader.releaseLock();
+		}
 	}
 
 	private user(value: JsonObject, requestId: string): StudioUser {

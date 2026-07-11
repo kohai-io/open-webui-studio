@@ -3,7 +3,7 @@ import { OwuiClient } from './client';
 import { createOwuiStub, stubClientOptions } from './stub';
 
 describe('OwuiClient.completeText', () => {
-	it('uses the direct non-persisted v0.10.2 completion contract', async () => {
+	it('uses the direct non-persisted streaming v0.10.2 completion contract', async () => {
 		const stub = createOwuiStub();
 		const client = new OwuiClient({
 			...stubClientOptions(stub.fetch),
@@ -27,7 +27,7 @@ describe('OwuiClient.completeText', () => {
 		expect(await completions[0].json()).toEqual({
 			model: 'model-a',
 			messages: [{ role: 'user', content: 'Summarise this text' }],
-			stream: false,
+			stream: true,
 			params: { temperature: 0.2, max_tokens: 512 }
 		});
 		expect(stub.requests.some((request) => new URL(request.url).pathname.includes('/chats'))).toBe(
@@ -124,11 +124,11 @@ describe('OwuiClient.completeText', () => {
 	it.each([
 		{},
 		{ choices: [] },
-		{ choices: [{ message: { content: 'one' } }, { message: { content: 'two' } }] },
-		{ choices: [{ message: { content: { text: 'not accepted' } } }] },
-		{ choices: [{ message: { content: '' } }] },
-		{ choices: [{ message: { content: '   ' } }] },
-		{ choices: [{ message: { content: 'x'.repeat(1024 * 1024 + 1) } }] }
+		{ choices: [{ delta: { content: 'one' } }, { delta: { content: 'two' } }] },
+		{ choices: [{ delta: { content: { text: 'not accepted' } } }] },
+		{ choices: [{ delta: { content: '' } }] },
+		{ choices: [{ delta: { content: '   ' } }] },
+		{ choices: [{ delta: { content: 'x'.repeat(1024 * 1024 + 1) } }] }
 	])('fails closed on malformed completion response %#', async (completionResponse) => {
 		const stub = createOwuiStub({ completionResponse });
 		const client = new OwuiClient({ ...stubClientOptions(stub.fetch), token: 'user-token' });
@@ -138,6 +138,44 @@ describe('OwuiClient.completeText', () => {
 			code: 'invalid_response',
 			status: 502
 		});
+	});
+
+	it('joins chunks split across transport boundaries and requires the terminal marker', async () => {
+		const stub = createOwuiStub();
+		const encoder = new TextEncoder();
+		const fetch: typeof globalThis.fetch = async (input, init) => {
+			const path = new URL(input instanceof Request ? input.url : input).pathname;
+			if (!path.endsWith('/api/chat/completions')) return stub.fetch(input, init);
+			return new Response(
+				new ReadableStream({
+					start(controller) {
+						controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Hel'));
+						controller.enqueue(
+							encoder.encode('lo"}}]}\n\ndata: {"choices":[{"delta":{"content":" world"}}]}\n\n')
+						);
+						controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+						controller.close();
+					}
+				})
+			);
+		};
+		const client = new OwuiClient({ ...stubClientOptions(fetch), token: 'user-token' });
+		await expect(
+			client.completeText({ modelId: 'model-a', prompt: 'Hello' })
+		).resolves.toMatchObject({ content: 'Hello world' });
+
+		const incompleteFetch: typeof globalThis.fetch = async (input, init) => {
+			const path = new URL(input instanceof Request ? input.url : input).pathname;
+			if (!path.endsWith('/api/chat/completions')) return stub.fetch(input, init);
+			return new Response('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+		};
+		const incomplete = new OwuiClient({
+			...stubClientOptions(incompleteFetch),
+			token: 'user-token'
+		});
+		await expect(
+			incomplete.completeText({ modelId: 'model-a', prompt: 'Hello' })
+		).rejects.toMatchObject({ code: 'invalid_response' });
 	});
 
 	it('maps its internal deadline to timeout without retrying', async () => {

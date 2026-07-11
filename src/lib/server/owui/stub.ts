@@ -72,11 +72,14 @@ export function createOwuiStub(options: OwuiStubOptions = {}): {
 			});
 		if (path.endsWith('/api/v1/functions/')) return json([]);
 		if (path.endsWith('/api/chat/completions'))
-			return json(
-				options.completionResponse ?? {
-					id: 'completion-a',
-					choices: [{ index: 0, message: { role: 'assistant', content: 'Completed text' } }]
-				}
+			return new Response(
+				`data: ${JSON.stringify(
+					options.completionResponse ?? {
+						id: 'completion-a',
+						choices: [{ index: 0, delta: { content: 'Completed text' } }]
+					}
+				)}\n\ndata: [DONE]\n\n`,
+				{ headers: { 'content-type': 'text/event-stream' } }
 			);
 		if (path.endsWith('/api/v1/files/')) {
 			const page = Number(new URL(request.url).searchParams.get('page') ?? '1');

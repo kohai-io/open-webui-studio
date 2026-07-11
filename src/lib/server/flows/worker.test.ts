@@ -41,7 +41,7 @@ describe('FlowWorker', () => {
 		expect(await completionRequests[0].json()).toMatchObject({
 			model: 'model-a',
 			messages: [{ role: 'user', content: 'Summarise private request' }],
-			stream: false
+			stream: true
 		});
 		expect(leaseCount(harness.database)).toBe(0);
 		expect(JSON.stringify(harness.executions.events('user-a', execution.id))).not.toContain(
