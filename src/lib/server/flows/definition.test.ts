@@ -72,6 +72,22 @@ describe('validateFlowDefinition', () => {
 		expectIssueCode(unmatched, 'invalid_reference');
 	});
 
+	it('rejects ambiguous fan-in for transforms and outputs without merge semantics', () => {
+		const transformFanIn = validFlowDefinition();
+		transformFanIn.nodes.unshift({
+			id: 'input2',
+			type: 'input',
+			position: { x: 0, y: 120 },
+			config: { key: 'second' }
+		});
+		transformFanIn.edges.push({ id: 'edge4', source: 'input2', target: 'transform1' });
+		expectIssueCode(transformFanIn, 'invalid_graph');
+
+		const outputFanIn = validFlowDefinition();
+		outputFanIn.edges.push({ id: 'edge4', source: 'model1', target: 'output1' });
+		expectIssueCode(outputFanIn, 'invalid_graph');
+	});
+
 	it('rejects duplicate input keys and URL-shaped model identifiers', () => {
 		const duplicateInput = validFlowDefinition();
 		duplicateInput.nodes.splice(1, 0, {

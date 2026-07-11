@@ -319,18 +319,18 @@ export class FlowExecutionStore {
 					.prepare(
 						`SELECT state FROM studio_flow_execution
 						 WHERE id = ? AND claim_token_hash = ?
-						   AND state IN ('running', 'cancel_requested')`
+						   AND state IN ('running', 'cancel_requested') AND claim_expires_at > ?`
 					)
-					.get(id, tokenHash) as { state: FlowExecutionState } | undefined;
+					.get(id, tokenHash, now) as { state: FlowExecutionState } | undefined;
 				if (!row) throw new FlowExecutionError('lost_claim');
 				this.options.database
 					.prepare(
 						`UPDATE studio_flow_execution
 						 SET heartbeat_at = ?, claim_expires_at = ?, updated_at = ?
 						 WHERE id = ? AND claim_token_hash = ?
-						   AND state IN ('running', 'cancel_requested')`
+						   AND state IN ('running', 'cancel_requested') AND claim_expires_at > ?`
 					)
-					.run(now, now + this.claimTtlMs, now, id, tokenHash);
+					.run(now, now + this.claimTtlMs, now, id, tokenHash, now);
 				return { cancelRequested: row.state === 'cancel_requested' };
 			})
 			.immediate();

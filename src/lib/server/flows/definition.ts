@@ -456,9 +456,17 @@ function validateGraph(nodes: FlowNodeV1[], edges: FlowEdgeV1[], validator: Vali
 	}
 
 	for (const [index, node] of nodes.entries()) {
-		if (node.type === 'input' && reverse.get(node.id)!.length > 0)
+		const incomingCount = reverse.get(node.id)!.length;
+		if (node.type === 'input' && incomingCount > 0)
 			validator.issue(`$.nodes[${index}]`, 'invalid_graph');
-		if (node.type !== 'input' && reverse.get(node.id)!.length === 0)
+		if (node.type !== 'input' && incomingCount === 0)
+			validator.issue(`$.nodes[${index}]`, 'invalid_graph');
+		if (
+			incomingCount > 0 &&
+			(node.type === 'output' ||
+				(node.type === 'transform' && node.config.operation !== 'template')) &&
+			incomingCount !== 1
+		)
 			validator.issue(`$.nodes[${index}]`, 'invalid_graph');
 		if (node.type === 'output' && adjacency.get(node.id)!.length > 0)
 			validator.issue(`$.nodes[${index}]`, 'invalid_graph');

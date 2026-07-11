@@ -154,6 +154,10 @@ describe('FlowExecutionStore', () => {
 			() => harness.executions.beginNode(claim.id, claim.claimToken, 'input1'),
 			'lost_claim'
 		);
+		expectExecutionError(
+			() => harness.executions.heartbeat(claim.id, claim.claimToken),
+			'lost_claim'
+		);
 		harness.close();
 	});
 
