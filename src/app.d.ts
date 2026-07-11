@@ -4,6 +4,7 @@ declare global {
 	namespace App {
 		interface Locals {
 			requestId: string;
+			session: import('$lib/server/sessions/store').StoredSession | null;
 		}
 		// interface PageData {}
 		// interface PageState {}

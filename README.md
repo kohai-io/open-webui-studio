@@ -40,6 +40,8 @@ npm run test:e2e
 
 Studio owns an independent SQLite database under `data/` by default. Numbered SQL migrations are applied transactionally and recorded in `studio_migration`. Session cookies will contain only random opaque handles; the database stores their SHA-256 hashes and AES-256-GCM encrypted OIDC/OWUI session payloads. Supply `SESSION_ENCRYPTION_KEY` as 32 random bytes encoded with base64 through the deployment secret manager.
 
+Generic OIDC login, callback, and logout routes live under `/studio/auth`. They use discovery, Authorization Code + PKCE, state, nonce, single-use encrypted transactions, subject binding, and the upstream OWUI provider-token exchange. The core flow is provider-neutral for eventual Okta use; automated tests use an in-process fake provider and require no external IdP.
+
 ## Container
 
 The multi-stage Dockerfile builds on Node 22, installs production dependencies only in the runtime image, and runs as the unprivileged `studio` user. Its health endpoint is `/studio/health` and returns no configuration or secret values.
