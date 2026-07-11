@@ -302,4 +302,21 @@ describe('OwuiClient', () => {
 		await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
 		expect(attempts).toBe(1);
 	});
+
+	it('fails safely when an owned file disappears before content streaming', async () => {
+		const stub = createOwuiStub({ userId: 'user-a' });
+		const fetch: typeof globalThis.fetch = async (input, init) => {
+			const path = new URL(input instanceof Request ? input.url : input).pathname;
+			if (path.endsWith('/api/v1/files/file-user-a/content'))
+				return Response.json({ detail: 'Not found' }, { status: 404 });
+			return stub.fetch(input, init);
+		};
+		const client = new OwuiClient({ ...stubClientOptions(fetch), token: 'user-token' });
+
+		await expect(client.openMediaContent('file-user-a', 'user-a')).rejects.toMatchObject({
+			code: 'not_found',
+			status: 404,
+			message: 'not_found'
+		});
+	});
 });
