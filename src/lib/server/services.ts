@@ -1,6 +1,7 @@
 import { env } from '$env/dynamic/private';
 import { openStudioDatabase } from '$lib/server/database/database';
 import { FlowCredentialLeaseStore } from '$lib/server/flows/credential-leases';
+import { FlowExecutionStore } from '$lib/server/flows/executions';
 import { FlowStore } from '$lib/server/flows/store';
 import { AuthService } from '$lib/server/oidc/auth-service';
 import { OpenIdProvider } from '$lib/server/oidc/provider';
@@ -13,6 +14,7 @@ let services:
 	| {
 			auth: AuthService;
 			flowCredentialLeases: FlowCredentialLeaseStore;
+			flowExecutions: FlowExecutionStore;
 			flows: FlowStore;
 			sessions: SessionStore;
 			owuiForToken: (token: string) => OwuiClient;
@@ -44,6 +46,7 @@ export function getServices() {
 	services = {
 		sessions,
 		flowCredentialLeases: new FlowCredentialLeaseStore({ database, encryptionKey: key }),
+		flowExecutions: new FlowExecutionStore({ database, encryptionKey: key }),
 		flows: new FlowStore(database),
 		auth: new AuthService(
 			env.OWUI_OAUTH_PROVIDER ?? 'oidc',

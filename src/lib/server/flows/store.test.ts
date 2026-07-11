@@ -33,6 +33,7 @@ describe('FlowStore', () => {
 	it('upgrades an existing Studio database without replacing foundation tables', () => {
 		const directory = mkdtempSync(join(tmpdir(), 'studio-flow-migration-'));
 		const filename = join(directory, 'studio.db');
+		let upgraded: StudioDatabase | undefined;
 		try {
 			const existing = new Database(filename);
 			existing.exec(
@@ -46,7 +47,7 @@ describe('FlowStore', () => {
 			}
 			existing.close();
 
-			const upgraded = openStudioDatabase(filename);
+			upgraded = openStudioDatabase(filename);
 			const tables = upgraded
 				.prepare(
 					"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('studio_identity', 'studio_session', 'oidc_transaction', 'studio_flow') ORDER BY name"
@@ -63,15 +64,28 @@ describe('FlowStore', () => {
 					.prepare("SELECT COUNT(*) AS count FROM studio_migration WHERE name = '0003_flows.sql'")
 					.get()
 			).toEqual({ count: 1 });
-			upgraded.close();
+			expect(
+				(upgraded.pragma('table_info(studio_flow_execution)') as Array<{ name: string }>).map(
+					(column) => column.name
+				)
+			).toEqual(expect.arrayContaining(['claim_token_hash', 'claim_attempt', 'claim_expires_at']));
+			expect(
+				upgraded
+					.prepare(
+						"SELECT COUNT(*) AS count FROM studio_migration WHERE name = '0005_flow_execution_lifecycle.sql'"
+					)
+					.get()
+			).toEqual({ count: 1 });
 		} finally {
-			rmSync(directory, { recursive: true, force: true });
+			upgraded?.close();
+			rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 		}
 	});
 
 	it('invalidates pre-contract credential leases during the ownership migration', () => {
 		const directory = mkdtempSync(join(tmpdir(), 'studio-flow-lease-migration-'));
 		const filename = join(directory, 'studio.db');
+		let upgraded: StudioDatabase | undefined;
 		try {
 			const existing = new Database(filename);
 			existing.pragma('foreign_keys = ON');
@@ -102,7 +116,7 @@ describe('FlowStore', () => {
 			`);
 			existing.close();
 
-			const upgraded = openStudioDatabase(filename);
+			upgraded = openStudioDatabase(filename);
 			expect(
 				upgraded.prepare('SELECT COUNT(*) AS count FROM studio_flow_credential_lease').get()
 			).toEqual({ count: 0 });
@@ -118,9 +132,14 @@ describe('FlowStore', () => {
 					)
 					.get()
 			).toEqual({ count: 1 });
-			upgraded.close();
+			expect(
+				upgraded
+					.prepare("SELECT state, error_code FROM studio_flow_execution WHERE id = 'execution-1'")
+					.get()
+			).toEqual({ state: 'failed', error_code: 'internal_error' });
 		} finally {
-			rmSync(directory, { recursive: true, force: true });
+			upgraded?.close();
+			rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 		}
 	});
 
