@@ -69,6 +69,61 @@ describe('FlowStore', () => {
 		}
 	});
 
+	it('invalidates pre-contract credential leases during the ownership migration', () => {
+		const directory = mkdtempSync(join(tmpdir(), 'studio-flow-lease-migration-'));
+		const filename = join(directory, 'studio.db');
+		try {
+			const existing = new Database(filename);
+			existing.pragma('foreign_keys = ON');
+			existing.exec(
+				'CREATE TABLE studio_migration (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)'
+			);
+			for (const name of ['0001_sessions.sql', '0002_oidc_transactions.sql', '0003_flows.sql']) {
+				existing.exec(readFileSync(join(process.cwd(), 'migrations', name), 'utf8'));
+				existing
+					.prepare('INSERT INTO studio_migration (name, applied_at) VALUES (?, 1000)')
+					.run(name);
+			}
+			existing.exec(`
+				INSERT INTO studio_flow
+				 (id, owner_owui_user_id, name, current_version, revision, created_at, updated_at)
+				 VALUES ('flow-1', 'user-a', 'Migrating', 1, 1, 1000, 1000);
+				INSERT INTO studio_flow_version
+				 (flow_id, version, name, definition_json, definition_hash,
+				  owner_owui_user_id, created_by_owui_user_id, created_at)
+				 VALUES ('flow-1', 1, 'Migrating', '{}', 'hash', 'user-a', 'user-a', 1000);
+				INSERT INTO studio_flow_execution
+				 (id, flow_id, flow_version, owner_owui_user_id, state, idempotency_key,
+				  created_at, updated_at)
+				 VALUES ('execution-1', 'flow-1', 1, 'user-a', 'queued', 'request-1', 1000, 1000);
+				INSERT INTO studio_flow_credential_lease
+				 (execution_id, encrypted_credential, expires_at, created_at)
+				 VALUES ('execution-1', 'pre-contract-ciphertext', 2000, 1000);
+			`);
+			existing.close();
+
+			const upgraded = openStudioDatabase(filename);
+			expect(
+				upgraded.prepare('SELECT COUNT(*) AS count FROM studio_flow_credential_lease').get()
+			).toEqual({ count: 0 });
+			expect(
+				(
+					upgraded.pragma('table_info(studio_flow_credential_lease)') as Array<{ name: string }>
+				).map((column) => column.name)
+			).toContain('owner_owui_user_id');
+			expect(
+				upgraded
+					.prepare(
+						"SELECT COUNT(*) AS count FROM studio_migration WHERE name = '0004_flow_credential_leases.sql'"
+					)
+					.get()
+			).toEqual({ count: 1 });
+			upgraded.close();
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('creates, lists, and reads only the current owner flows', () => {
 		const { database, store } = harness();
 		const first = store.create('user-a', {
@@ -240,8 +295,8 @@ function insertExecutionGraph(
 	database
 		.prepare(
 			`INSERT INTO studio_flow_credential_lease
-			 (execution_id, encrypted_credential, expires_at, created_at)
-			 VALUES ('execution-1', 'encrypted', 2000, 1000)`
+			 (execution_id, owner_owui_user_id, encrypted_credential, expires_at, created_at)
+			 VALUES ('execution-1', 'user-a', 'encrypted', 2000, 1000)`
 		)
 		.run();
 	database
