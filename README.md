@@ -36,6 +36,10 @@ npm run test:e2e
 
 `src/lib/server/owui` contains the server-only v0.10.2 adapter, normalized contracts, stable error mapping, and deterministic test stub. It covers OAuth token exchange, current identity, filtered models/agents, paginated files, paginated Knowledge, and chat creation. Mutations are never retried automatically; idempotent reads receive at most one transient retry.
 
+## Database and sessions
+
+Studio owns an independent SQLite database under `data/` by default. Numbered SQL migrations are applied transactionally and recorded in `studio_migration`. Session cookies will contain only random opaque handles; the database stores their SHA-256 hashes and AES-256-GCM encrypted OIDC/OWUI session payloads. Supply `SESSION_ENCRYPTION_KEY` as 32 random bytes encoded with base64 through the deployment secret manager.
+
 ## Container
 
 The multi-stage Dockerfile builds on Node 22, installs production dependencies only in the runtime image, and runs as the unprivileged `studio` user. Its health endpoint is `/studio/health` and returns no configuration or secret values.
