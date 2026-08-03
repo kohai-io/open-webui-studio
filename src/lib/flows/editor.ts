@@ -12,6 +12,11 @@ export interface AddFlowNodeResult {
 	nodeId: string;
 }
 
+export interface AddFlowNodeAfterResult extends AddFlowNodeResult {
+	error: string | null;
+	insertedBeforeNodeId: string | null;
+}
+
 export function cloneFlowDefinition(definition: FlowDefinitionV1): FlowDefinitionV1 {
 	return structuredClone(definition);
 }
@@ -29,6 +34,52 @@ export function addFlowNode(
 	return {
 		definition: { ...definition, nodes: [...definition.nodes, node] },
 		nodeId: id
+	};
+}
+
+export function addFlowNodeAfter(
+	definition: FlowDefinitionV1,
+	sourceNodeId: string,
+	type: Exclude<AdmittedFlowNodeType, 'input'>,
+	defaultModelId = ''
+): AddFlowNodeAfterResult | null {
+	const added = addFlowNode(definition, type, defaultModelId);
+	if (!added) return null;
+	const outgoing = definition.edges.filter((edge) => edge.source === sourceNodeId);
+	const replacedEdge = type !== 'output' && outgoing.length === 1 ? outgoing[0] : null;
+	const base = replacedEdge
+		? {
+				...added.definition,
+				edges: added.definition.edges.filter((edge) => edge.id !== replacedEdge.id)
+			}
+		: added.definition;
+	const connected = connectFlowNodes(base, {
+		source: sourceNodeId,
+		target: added.nodeId
+	});
+	if (connected.error)
+		return {
+			definition,
+			nodeId: added.nodeId,
+			error: connected.error,
+			insertedBeforeNodeId: null
+		};
+	if (!replacedEdge)
+		return {
+			definition: connected.definition,
+			nodeId: added.nodeId,
+			error: null,
+			insertedBeforeNodeId: null
+		};
+	const reconnected = connectFlowNodes(connected.definition, {
+		source: added.nodeId,
+		target: replacedEdge.target
+	});
+	return {
+		definition: reconnected.error ? definition : reconnected.definition,
+		nodeId: added.nodeId,
+		error: reconnected.error,
+		insertedBeforeNodeId: reconnected.error ? null : replacedEdge.target
 	};
 }
 

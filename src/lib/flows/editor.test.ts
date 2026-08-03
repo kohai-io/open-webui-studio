@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildLinearFlowDefinition, defaultLinearFlowDraft } from './linear';
 import {
 	addFlowNode,
+	addFlowNodeAfter,
 	connectFlowNodes,
 	flowConnectionError,
 	flowEditorIssues,
@@ -21,6 +22,37 @@ describe('editable Flow graph', () => {
 			config: { operation: 'trim' }
 		});
 		expect(addFlowNode(definition, 'output')).toBeNull();
+	});
+
+	it('inserts a guided node into a single path and branches when the path already splits', () => {
+		const definition = buildLinearFlowDefinition(defaultLinearFlowDraft('model-a'));
+		const inserted = addFlowNodeAfter(definition, 'model', 'transform');
+		if (!inserted) throw new Error('fixture mismatch');
+
+		expect(inserted.error).toBeNull();
+		expect(inserted.insertedBeforeNodeId).toBe('output');
+		expect(inserted.definition.edges.map(({ source, target }) => `${source}-${target}`)).toEqual([
+			'input-model',
+			'model-transform',
+			'transform-output'
+		]);
+
+		const extra = addFlowNode(inserted.definition, 'transform');
+		if (!extra) throw new Error('fixture mismatch');
+		const split = connectFlowNodes(extra.definition, {
+			source: 'model',
+			target: extra.nodeId
+		});
+		if (split.error) throw new Error('fixture mismatch');
+		const branched = addFlowNodeAfter(split.definition, 'model', 'model', 'model-a');
+		if (!branched) throw new Error('fixture mismatch');
+		expect(branched.error).toBeNull();
+		expect(branched.insertedBeforeNodeId).toBeNull();
+		expect(
+			branched.definition.edges.some(
+				(edge) => edge.source === 'model' && edge.target === branched.nodeId
+			)
+		).toBe(true);
 	});
 
 	it('connects nodes, rejects duplicates and cycles, and removes incident edges', () => {

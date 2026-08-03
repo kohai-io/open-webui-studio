@@ -5,7 +5,7 @@
 	import { nodeExecutionStateMap } from '$lib/flows/execution-state';
 	import {
 		addFlowNode,
-		cloneFlowDefinition,
+		addFlowNodeAfter,
 		connectFlowNodes,
 		flowEditorIssues,
 		moveFlowNode,
@@ -14,6 +14,13 @@
 		replaceFlowNode,
 		type AdmittedFlowNodeType
 	} from '$lib/flows/editor';
+	import {
+		commitFlowEditorHistory,
+		createFlowEditorHistory,
+		redoFlowEditorHistory,
+		undoFlowEditorHistory
+	} from '$lib/flows/history';
+	import { autoLayoutFlowDefinition } from '$lib/flows/layout';
 	import type { FlowDefinitionV1, FlowNodeV1, FlowPositionV1 } from '$lib/flows/types';
 	import type { Connection } from '@xyflow/svelte';
 	import FlowCanvas from '$lib/components/flows/FlowCanvas.svelte';
@@ -55,7 +62,8 @@
 	let selectedFlow = $state<FlowRecord | null>(initialData.selectedFlow);
 	let flowName = $state(initialData.selectedFlow?.name ?? '');
 	let flowDescription = $state(initialData.selectedFlow?.description ?? '');
-	let definition = $state<FlowDefinitionV1>(cloneFlowDefinition(initialDefinition));
+	let editorHistory = $state.raw(createFlowEditorHistory(initialDefinition));
+	let definition = $derived(editorHistory.present);
 	let executions = $state<ExecutionSummary[]>(
 		initialData.selectedFlow
 			? initialData.executions.filter(
@@ -79,6 +87,8 @@
 	);
 	let selectedEdgeId = $state<string | null>(null);
 	let graphIssues = $derived(flowEditorIssues(definition));
+	let canUndo = $derived(editorHistory.past.length > 0);
+	let canRedo = $derived(editorHistory.future.length > 0);
 	let selectedNode = $derived(definition.nodes.find((node) => node.id === selectedNodeId) ?? null);
 	let predecessorIds = $derived(
 		selectedNodeId
@@ -130,6 +140,14 @@
 		errorMessage = '';
 	}
 
+	function resetEditorDefinition(value: FlowDefinitionV1) {
+		editorHistory = createFlowEditorHistory(value);
+	}
+
+	function applyEditorDefinition(value: FlowDefinitionV1) {
+		editorHistory = commitFlowEditorHistory(editorHistory, value);
+	}
+
 	function newFlow() {
 		eventSource?.close();
 		eventSource = null;
@@ -137,7 +155,9 @@
 		selectedFlow = null;
 		flowName = '';
 		flowDescription = '';
-		definition = buildLinearFlowDefinition(defaultLinearFlowDraft(data.models[0]?.id ?? ''));
+		resetEditorDefinition(
+			buildLinearFlowDefinition(defaultLinearFlowDraft(data.models[0]?.id ?? ''))
+		);
 		selectedNodeId = 'model';
 		selectedEdgeId = null;
 		executions = [];
@@ -160,7 +180,7 @@
 			selectedFlow = flow;
 			flowName = flow.name;
 			flowDescription = flow.description ?? '';
-			definition = cloneFlowDefinition(flow.definition);
+			resetEditorDefinition(flow.definition);
 			selectedNodeId =
 				definition.nodes.find((node) => node.type === 'model')?.id ??
 				definition.nodes[0]?.id ??
@@ -200,7 +220,7 @@
 			);
 			selectedId = flow.id;
 			selectedFlow = flow;
-			definition = cloneFlowDefinition(flow.definition);
+			resetEditorDefinition(flow.definition);
 			runInputs = initialRuntimeInputs(flow.definition, runInputs);
 			const summary: FlowSummary = flow;
 			flows = [summary, ...flows.filter((item) => item.id !== flow.id)];
@@ -337,22 +357,40 @@
 	}
 
 	function updateCanvasPosition(nodeId: string, position: FlowPositionV1) {
-		definition = moveFlowNode(definition, nodeId, position);
+		applyEditorDefinition(moveFlowNode(definition, nodeId, position));
 	}
 
-	function addCanvasNode(type: AdmittedFlowNodeType) {
+	function addCanvasNode(type: AdmittedFlowNodeType, sourceNodeId: string | null) {
 		clearNotice();
-		const result = addFlowNode(definition, type, data.models[0]?.id ?? '');
-		if (!result) {
-			errorMessage =
-				type === 'output'
-					? 'A Flow can contain exactly one Output node.'
-					: 'This Flow has reached the node limit.';
+		if (sourceNodeId && type !== 'input') {
+			const guided = addFlowNodeAfter(definition, sourceNodeId, type, data.models[0]?.id ?? '');
+			if (!guided) {
+				errorMessage = unavailableNodeMessage(type);
+				return;
+			}
+			if (guided.error) {
+				errorMessage = guided.error;
+				return;
+			}
+			applyEditorDefinition(guided.definition);
+			selectedNodeId = guided.nodeId;
+			selectedEdgeId = null;
 			return;
 		}
-		definition = result.definition;
+		const result = addFlowNode(definition, type, data.models[0]?.id ?? '');
+		if (!result) {
+			errorMessage = unavailableNodeMessage(type);
+			return;
+		}
+		applyEditorDefinition(result.definition);
 		selectedNodeId = result.nodeId;
 		selectedEdgeId = null;
+	}
+
+	function unavailableNodeMessage(type: AdmittedFlowNodeType): string {
+		return type === 'output'
+			? 'A Flow can contain exactly one Output node.'
+			: 'This Flow has reached the node limit.';
 	}
 
 	function connectCanvasNodes(connection: Connection) {
@@ -362,23 +400,74 @@
 			errorMessage = result.error;
 			return;
 		}
-		definition = result.definition;
+		applyEditorDefinition(result.definition);
 	}
 
 	function updateCanvasNode(node: FlowNodeV1) {
-		definition = replaceFlowNode(definition, node);
+		applyEditorDefinition(replaceFlowNode(definition, node));
 	}
 
 	function deleteCanvasNode(nodeId: string) {
 		const node = definition.nodes.find((candidate) => candidate.id === nodeId);
 		if (!node || !confirm(`Delete ${node.id}?`)) return;
-		definition = removeFlowNode(definition, nodeId);
+		applyEditorDefinition(removeFlowNode(definition, nodeId));
 		clearCanvasSelection();
 	}
 
 	function deleteCanvasEdge(edgeId: string) {
-		definition = removeFlowEdge(definition, edgeId);
+		applyEditorDefinition(removeFlowEdge(definition, edgeId));
 		selectedEdgeId = null;
+	}
+
+	function autoLayoutCanvas() {
+		clearNotice();
+		applyEditorDefinition(autoLayoutFlowDefinition(definition));
+	}
+
+	function undoCanvasChange() {
+		const nextHistory = undoFlowEditorHistory(editorHistory);
+		if (nextHistory === editorHistory) return;
+		editorHistory = nextHistory;
+		reconcileCanvasSelection();
+		clearNotice();
+	}
+
+	function redoCanvasChange() {
+		const nextHistory = redoFlowEditorHistory(editorHistory);
+		if (nextHistory === editorHistory) return;
+		editorHistory = nextHistory;
+		reconcileCanvasSelection();
+		clearNotice();
+	}
+
+	function reconcileCanvasSelection() {
+		if (selectedNodeId && !definition.nodes.some((node) => node.id === selectedNodeId))
+			selectedNodeId = null;
+		if (selectedEdgeId && !definition.edges.some((edge) => edge.id === selectedEdgeId))
+			selectedEdgeId = null;
+	}
+
+	function handleEditorKeydown(event: KeyboardEvent) {
+		if ((!event.ctrlKey && !event.metaKey) || event.altKey) return;
+		const target = event.target;
+		if (
+			target instanceof HTMLInputElement ||
+			target instanceof HTMLTextAreaElement ||
+			target instanceof HTMLSelectElement ||
+			(target instanceof HTMLElement && target.isContentEditable)
+		)
+			return;
+		const key = event.key.toLocaleLowerCase();
+		if (key === 'z' && event.shiftKey) {
+			event.preventDefault();
+			redoCanvasChange();
+		} else if (key === 'z') {
+			event.preventDefault();
+			undoCanvasChange();
+		} else if (key === 'y') {
+			event.preventDefault();
+			redoCanvasChange();
+		}
 	}
 
 	function initialRuntimeInputs(
@@ -416,6 +505,8 @@
 		return labels[code] ?? 'Studio could not complete that Flow request.';
 	}
 </script>
+
+<svelte:window onkeydown={handleEditorKeydown} />
 
 <svelte:head>
 	<title>Studio · Flows</title>
@@ -569,6 +660,11 @@
 								onconnectnodes={connectCanvasNodes}
 								onaddnode={addCanvasNode}
 								ondeleteedge={deleteCanvasEdge}
+								onautolayout={autoLayoutCanvas}
+								onundo={undoCanvasChange}
+								onredo={redoCanvasChange}
+								{canUndo}
+								{canRedo}
 							/>
 							{#if selectedNode}
 								<div class="node-config-overlay">
