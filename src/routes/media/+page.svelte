@@ -3,6 +3,7 @@
 
 	let { data } = $props();
 	let previewItem = $state<(typeof data.items)[number] | null>(null);
+	let failedThumbnails = $state<string[]>([]);
 	const loginHref = resolve(`/auth/login?return=${encodeURIComponent(resolve('/media'))}`);
 	const contentUrl = (id: string) => resolve('/media/[id]/content', { id });
 	const nextQuery = () =>
@@ -105,9 +106,22 @@
 							onclick={() => (previewItem = item)}
 							aria-label={`Preview ${item.filename}`}
 						>
-							<span class="media-symbol" aria-hidden="true">
-								{item.mediaType === 'image' ? '▧' : item.mediaType === 'video' ? '▶' : '♪'}
-							</span>
+							{#if item.mediaType === 'image' && !failedThumbnails.includes(item.id)}
+								<img
+									src={contentUrl(item.id)}
+									alt=""
+									loading="lazy"
+									decoding="async"
+									onerror={() => (failedThumbnails = [...failedThumbnails, item.id])}
+								/>
+							{:else}
+								<span class="preview-fallback" aria-hidden="true">
+									<span class="media-symbol">
+										{item.mediaType === 'image' ? '▧' : item.mediaType === 'video' ? '▶' : '♪'}
+									</span>
+									{#if item.mediaType === 'image'}<span>Preview unavailable</span>{/if}
+								</span>
+							{/if}
 						</button>
 						<div class="details">
 							<h2 title={item.filename}>{item.filename}</h2>
@@ -297,15 +311,33 @@
 		background: #11151a;
 	}
 	.preview {
+		position: relative;
 		display: grid;
 		width: 100%;
 		aspect-ratio: 16 / 10;
+		padding: 0;
 		place-items: center;
 		overflow: hidden;
 		border: 0;
 		background: #080a0d;
 		color: #6ee7b7;
 		cursor: pointer;
+	}
+	.preview img {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+	.preview:focus-visible {
+		outline: 2px solid #6ee7b7;
+		outline-offset: -2px;
+	}
+	.preview-fallback {
+		display: grid;
+		gap: 0.5rem;
+		place-items: center;
 	}
 	.media-symbol {
 		font-size: 3rem;
