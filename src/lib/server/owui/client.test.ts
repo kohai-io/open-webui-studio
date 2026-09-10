@@ -163,6 +163,31 @@ describe('OwuiClient', () => {
 		await expect(client.searchMedia('admin-a', '*')).rejects.toThrow(TypeError);
 	});
 
+	it.each([24, 25, 30, 48, 49, 50, 74])(
+		'paginates all %i media search results without omissions or duplicates',
+		async (count) => {
+			const files = Array.from({ length: count }, (_, index) => ({
+				id: `image-${index}`,
+				userId: 'user-a',
+				filename: `summer-${index}.png`,
+				contentType: 'image/png'
+			}));
+			const stub = createOwuiStub({ userId: 'user-a', files });
+			const client = new OwuiClient({ ...stubClientOptions(stub.fetch), token: 'user-token' });
+			let cursor: string | null = null;
+
+			for (let offset = 0; offset < count; offset += 24) {
+				const page = await client.searchMedia('user-a', 'summer', cursor);
+				expect(page.items.map((item) => item.id)).toEqual(
+					files.slice(offset, offset + 24).map((file) => file.id)
+				);
+				if (offset + 24 < count) expect(page.nextCursor).not.toBeNull();
+				else expect(page.nextCursor).toBeNull();
+				cursor = page.nextCursor;
+			}
+		}
+	);
+
 	it('blocks administrator cross-user preview and download before requesting content', async () => {
 		const stub = createOwuiStub({
 			userId: 'admin-a',

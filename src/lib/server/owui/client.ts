@@ -247,6 +247,7 @@ export class OwuiClient {
 				hasMore = false;
 				break;
 			}
+			const batchStart = position;
 			for (const file of batch) {
 				position += 1;
 				scanned += 1;
@@ -254,7 +255,8 @@ export class OwuiClient {
 				if (file.ownerId === ownerId && media) items.push(media);
 				if (items.length === limit || scanned === MEDIA_SCAN_LIMIT) break;
 			}
-			if (batch.length < OWUI_FILE_PAGE_SIZE) hasMore = false;
+			const consumedBatch = position - batchStart === batch.length;
+			if (consumedBatch && batch.length < OWUI_FILE_PAGE_SIZE) hasMore = false;
 		}
 
 		return {
