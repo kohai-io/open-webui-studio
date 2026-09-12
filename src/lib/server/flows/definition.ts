@@ -1,3 +1,4 @@
+import { imageConnectionError, producesImages } from '$lib/flows/types';
 import {
 	FLOW_DEFINITION_SCHEMA_VERSION,
 	type FlowDefinitionV1,
@@ -189,6 +190,39 @@ function parseNode(value: unknown, path: string, validator: Validator): FlowNode
 			const config = parseInputConfig(node.config, `${path}.config`, validator);
 			return config ? { id, type, position, config } : null;
 		}
+		case 'image': {
+			const config = validator.record(node.config, `${path}.config`);
+			if (!config) return null;
+			validator.exact(config, ['operation', 'prompt', 'size'], `${path}.config`);
+			const prompt = validator.string(config.prompt, `${path}.config.prompt`, {
+				required: true,
+				min: 1,
+				max: 32768,
+				sensitive: true
+			});
+			if (config.operation !== 'generate' && config.operation !== 'edit') {
+				validator.issue(`${path}.config.operation`, 'invalid_value');
+				return null;
+			}
+			const size = config.size;
+			if (
+				size !== undefined &&
+				size !== '1024x1024' &&
+				size !== '1536x1024' &&
+				size !== '1024x1536'
+			) {
+				validator.issue(`${path}.config.size`, 'invalid_value');
+				return null;
+			}
+			return prompt
+				? {
+						id,
+						type,
+						position,
+						config: { operation: config.operation, prompt, ...(size ? { size } : {}) }
+					}
+				: null;
+		}
 		case 'model': {
 			const config = parseModelConfig(node.config, `${path}.config`, validator);
 			return config ? { id, type, position, config } : null;
@@ -231,7 +265,7 @@ function parseInputConfig(
 ): FlowInputNodeV1['config'] | null {
 	const config = validator.record(value, path);
 	if (!config) return null;
-	validator.exact(config, ['key', 'defaultValue'], path);
+	validator.exact(config, ['key', 'defaultValue', 'kind'], path);
 	const key = validator.string(config.key, `${path}.key`, {
 		required: true,
 		min: 1,
@@ -243,7 +277,15 @@ function parseInputConfig(
 		sensitive: true
 	});
 	if (!key) return null;
-	return defaultValue === undefined ? { key } : { key, defaultValue };
+	if (config.kind !== undefined && config.kind !== 'text' && config.kind !== 'images')
+		validator.issue(`${path}.kind`, 'invalid_value');
+	if (config.kind === 'images' && defaultValue !== undefined)
+		validator.issue(`${path}.defaultValue`, 'invalid_value');
+	return {
+		key,
+		...(defaultValue === undefined ? {} : { defaultValue }),
+		...(config.kind === 'images' || config.kind === 'text' ? { kind: config.kind } : {})
+	};
 }
 
 function parseModelConfig(
@@ -357,7 +399,7 @@ function parseOutputConfig(
 		min: 1,
 		max: 16
 	});
-	if (format !== 'text' && format !== 'json') {
+	if (format !== 'text' && format !== 'json' && format !== 'images') {
 		if (format !== undefined) validator.issue(`${path}.format`, 'invalid_value');
 		return null;
 	}
@@ -424,6 +466,8 @@ function validateGraph(nodes: FlowNodeV1[], edges: FlowEdgeV1[], validator: Vali
 			validator.issue(`$.edges[${index}].target`, 'invalid_reference');
 		if (edge.source === edge.target) validator.issue(`$.edges[${index}]`, 'invalid_graph');
 		if (nodeById.has(edge.source) && nodeById.has(edge.target) && edge.source !== edge.target) {
+			if (imageConnectionError(nodeById.get(edge.source)!, nodeById.get(edge.target)!))
+				validator.issue(`$.edges[${index}]`, 'invalid_graph');
 			adjacency.get(edge.source)!.push(edge.target);
 			reverse.get(edge.target)!.push(edge.source);
 		}
@@ -431,6 +475,12 @@ function validateGraph(nodes: FlowNodeV1[], edges: FlowEdgeV1[], validator: Vali
 
 	for (const [index, node] of nodes.entries()) {
 		const incomingCount = reverse.get(node.id)!.length;
+		if (
+			node.type === 'image' &&
+			node.config.operation === 'edit' &&
+			!reverse.get(node.id)!.some((id) => producesImages(nodeById.get(id)!))
+		)
+			validator.issue(`$.nodes[${index}]`, 'invalid_graph');
 		if (node.type === 'input' && incomingCount > 0)
 			validator.issue(`$.nodes[${index}]`, 'invalid_graph');
 		if (node.type !== 'input' && incomingCount === 0)
@@ -476,7 +526,7 @@ function validateGraph(nodes: FlowNodeV1[], edges: FlowEdgeV1[], validator: Vali
 
 	for (const [index, node] of nodes.entries()) {
 		const template =
-			node.type === 'model'
+			node.type === 'model' || node.type === 'image'
 				? node.config.prompt
 				: node.type === 'transform' && node.config.operation === 'template'
 					? node.config.template
@@ -521,7 +571,12 @@ function validateTemplate(
 			continue;
 		}
 		const referenceId = reference[1];
-		if (!nodes.has(referenceId) || !walk([referenceId], adjacency).has(nodeId))
+		if (
+			!nodes.has(referenceId) ||
+			producesImages(nodes.get(referenceId)!) ||
+			referenceId === nodeId ||
+			!walk([referenceId], adjacency).has(nodeId)
+		)
 			validator.issue(path, 'invalid_reference');
 	}
 	if (

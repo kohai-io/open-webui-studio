@@ -1,3 +1,4 @@
+import { isFlowImages, type FlowImages, type FlowImageNodeV1 } from '$lib/flows/types';
 import { randomUUID } from 'node:crypto';
 import { normaliseEpochMilliseconds } from '$lib/server/time';
 import type {
@@ -36,6 +37,8 @@ export interface OwuiClientOptions {
 	timeoutMs?: number;
 }
 interface RequestOptions {
+	timeoutMs?: number;
+	formData?: FormData;
 	method?: 'GET' | 'POST' | 'DELETE';
 	body?: unknown;
 	authenticated?: boolean;
@@ -348,6 +351,90 @@ export class OwuiClient {
 		};
 	}
 
+	async resolveImages(
+		fileIds: string[],
+		ownerId: string,
+		signal?: AbortSignal
+	): Promise<FlowImages> {
+		const value = { kind: 'images', fileIds };
+		if (!isFlowImages(value)) throw new TypeError('Choose 1-8 image files');
+		for (const id of fileIds) {
+			const media = await this.getOwnedMedia(id, ownerId, signal);
+			if (
+				media.mediaType !== 'image' ||
+				!['image/png', 'image/jpeg', 'image/webp'].includes(media.contentType ?? '')
+			)
+				throw new TypeError('Choose PNG, JPEG or WebP images');
+		}
+		return { kind: 'images', fileIds: [...fileIds] };
+	}
+
+	async uploadFlowImage(file: File, ownerId: string, signal?: AbortSignal): Promise<FlowImages> {
+		if (
+			file.size === 0 ||
+			file.size > 10 * 1024 * 1024 ||
+			!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)
+		)
+			throw new TypeError('Choose a PNG, JPEG or WebP image up to 10 MB');
+		const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+		const valid =
+			file.type === 'image/png'
+				? [137, 80, 78, 71, 13, 10, 26, 10].every((b, i) => bytes[i] === b)
+				: file.type === 'image/jpeg'
+					? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+					: String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' &&
+						String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
+		if (!valid) throw new TypeError('Image contents do not match its format');
+		const formData = new FormData();
+		const extension =
+			file.type === 'image/png' ? 'png' : file.type === 'image/jpeg' ? 'jpg' : 'webp';
+		formData.append('file', file, `flow-image.${extension}`);
+		const { payload, requestId } = await this.request('api/v1/files/?process=false', {
+			method: 'POST',
+			formData,
+			signal,
+			timeoutMs: 60_000
+		});
+		const id = string(object(payload, requestId).id, requestId);
+		return this.resolveImages([id], ownerId, signal);
+	}
+
+	async createImages(
+		input: FlowImageNodeV1['config'] & { fileIds: string[]; ownerId: string; signal?: AbortSignal }
+	): Promise<FlowImages> {
+		if (!input.prompt.trim() || input.prompt.length > 32768)
+			throw new TypeError('Enter an image prompt');
+		if (input.operation !== 'generate' && input.operation !== 'edit')
+			throw new TypeError('Invalid image operation');
+		if (input.size && !['1024x1024', '1536x1024', '1024x1536'].includes(input.size))
+			throw new TypeError('Invalid image size');
+		if (input.operation === 'edit')
+			await this.resolveImages(input.fileIds, input.ownerId, input.signal);
+		else if (input.fileIds.length)
+			throw new TypeError('Generation does not accept reference images');
+		const { payload, requestId } = await this.request(
+			input.operation === 'edit' ? 'api/v1/images/edit' : 'api/v1/images/generations',
+			{
+				method: 'POST',
+				signal: input.signal,
+				timeoutMs: 300_000,
+				body: {
+					prompt: input.prompt,
+					n: 1,
+					...(input.size ? { size: input.size } : {}),
+					...(input.operation === 'edit' ? { image: input.fileIds } : {})
+				}
+			}
+		);
+		const fileIds = array(payload, requestId).map((entry) => {
+			const path = string(object(entry, requestId).url, requestId);
+			const match = /^\/api\/v1\/files\/([A-Za-z0-9_-]{1,128})\/content$/.exec(path);
+			if (!match) throw new OwuiError('invalid_response', 502, requestId);
+			return match[1];
+		});
+		return this.resolveImages(fileIds, input.ownerId, input.signal);
+	}
+
 	async completeText(input: OwuiTextCompletionRequest): Promise<OwuiTextCompletion> {
 		if (
 			!input.modelId ||
@@ -523,10 +610,16 @@ export class OwuiClient {
 				const response = await this.fetcher(new URL(path, this.baseUrl), {
 					method,
 					headers,
-					body: options.body === undefined ? undefined : JSON.stringify(options.body),
+					body:
+						options.formData ??
+						(options.body === undefined ? undefined : JSON.stringify(options.body)),
+					redirect: 'error',
 					signal: options.signal
-						? AbortSignal.any([options.signal, AbortSignal.timeout(this.timeoutMs)])
-						: AbortSignal.timeout(this.timeoutMs)
+						? AbortSignal.any([
+								options.signal,
+								AbortSignal.timeout(options.timeoutMs ?? this.timeoutMs)
+							])
+						: AbortSignal.timeout(options.timeoutMs ?? this.timeoutMs)
 				});
 				if (!response.ok) {
 					if (attempt < attempts && [502, 503, 504].includes(response.status)) continue;

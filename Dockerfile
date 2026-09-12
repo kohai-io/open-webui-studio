@@ -9,7 +9,8 @@ RUN npm prune --omit=dev
 FROM node:22.17.0-alpine AS runtime
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=3000
+    PORT=3000 \
+    BODY_SIZE_LIMIT=12M
 WORKDIR /app
 RUN addgroup -S studio && adduser -S studio -G studio
 COPY --from=build --chown=studio:studio /app/build ./build

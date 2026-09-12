@@ -10,6 +10,13 @@ export interface FlowNodeCatalogueItem {
 
 export const FLOW_NODE_CATALOGUE: readonly FlowNodeCatalogueItem[] = [
 	{
+		type: 'image',
+		name: 'Image',
+		category: 'AI',
+		description: 'Generate or edit images using Open WebUI.',
+		keywords: ['image', 'generate', 'edit', 'picture', 'sketch']
+	},
+	{
 		type: 'input',
 		name: 'Input',
 		category: 'Start',

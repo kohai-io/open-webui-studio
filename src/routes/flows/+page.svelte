@@ -1,4 +1,8 @@
 <script lang="ts">
+	import { imageFlowDefinition } from '$lib/flows/image';
+	import { isFlowImages, type FlowInputValue } from '$lib/flows/types';
+	import ImageInput from '$lib/components/flows/ImageInput.svelte';
+	import ImageOutput from '$lib/components/flows/ImageOutput.svelte';
 	import { resolve } from '$app/paths';
 	import { untrack } from 'svelte';
 	import { buildLinearFlowDefinition, defaultLinearFlowDraft } from '$lib/flows/linear';
@@ -33,6 +37,7 @@
 	type ExecutionSummary = (typeof data.executions)[number];
 	type FlowRecord = NonNullable<typeof data.selectedFlow>;
 	type NodeRecord = {
+		payload?: unknown;
 		nodeId: string;
 		nodeType: string;
 		nodeOrder: number;
@@ -41,7 +46,7 @@
 		errorCode: string | null;
 	};
 	type ExecutionRecord = ExecutionSummary & {
-		inputs: Record<string, string>;
+		inputs: Record<string, FlowInputValue>;
 		output?: unknown;
 		nodes: NodeRecord[];
 	};
@@ -73,8 +78,9 @@
 	);
 	let currentExecution = $state<ExecutionRecord | null>(null);
 	let progress = $state<FlowEvent[]>([]);
-	let runInputs = $state<Record<string, string>>(initialRuntimeInputs(initialDefinition));
+	let runInputs = $state<Record<string, FlowInputValue>>(initialRuntimeInputs(initialDefinition));
 	let saving = $state(false);
+	let pendingUploads = $state(0);
 	let running = $state(false);
 	let deleting = $state(false);
 	let message = $state('');
@@ -98,10 +104,12 @@
 	let hasRunInput = $derived(
 		(selectedFlow?.definition.nodes ?? [])
 			.filter((node) => node.type === 'input')
-			.every(
-				(node) =>
-					typeof runInputs[node.config.key] === 'string' &&
-					(runInputs[node.config.key].length > 0 || node.config.defaultValue !== undefined)
+			.every((node) =>
+				node.config.kind === 'images'
+					? isFlowImages(runInputs[node.config.key])
+					: typeof runInputs[node.config.key] === 'string' &&
+						((runInputs[node.config.key] as string).length > 0 ||
+							node.config.defaultValue !== undefined)
 			)
 	);
 	let executionByNodeId = $derived.by(() =>
@@ -148,7 +156,8 @@
 		editorHistory = commitFlowEditorHistory(editorHistory, value);
 	}
 
-	function newFlow() {
+	function newFlow(kind: 'text' | 'generate' | 'edit' = 'text') {
+		if (pendingUploads > 0) return;
 		eventSource?.close();
 		eventSource = null;
 		selectedId = null;
@@ -156,9 +165,11 @@
 		flowName = '';
 		flowDescription = '';
 		resetEditorDefinition(
-			buildLinearFlowDefinition(defaultLinearFlowDraft(data.models[0]?.id ?? ''))
+			kind === 'text'
+				? buildLinearFlowDefinition(defaultLinearFlowDraft(data.models[0]?.id ?? ''))
+				: imageFlowDefinition(kind)
 		);
-		selectedNodeId = 'model';
+		selectedNodeId = kind === 'text' ? 'model' : 'image';
 		selectedEdgeId = null;
 		executions = [];
 		currentExecution = null;
@@ -168,6 +179,7 @@
 	}
 
 	async function selectFlow(id: string) {
+		if (pendingUploads > 0) return;
 		clearNotice();
 		eventSource?.close();
 		eventSource = null;
@@ -196,6 +208,7 @@
 	}
 
 	async function saveFlow() {
+		if (pendingUploads > 0) return;
 		clearNotice();
 		if (graphIssues.length > 0) {
 			errorMessage = graphIssues[0];
@@ -254,7 +267,7 @@
 	}
 
 	async function runFlow() {
-		if (!selectedFlow) return;
+		if (!selectedFlow || pendingUploads > 0 || running || !hasRunInput) return;
 		clearNotice();
 		running = true;
 		try {
@@ -311,6 +324,7 @@
 	async function loadExecution(id: string) {
 		try {
 			const execution = await requestJson<ExecutionRecord>(executionUrl(id));
+			if (selectedFlow) runInputs = initialRuntimeInputs(selectedFlow.definition, execution.inputs);
 			currentExecution = execution;
 			executions = [execution, ...executions.filter((item) => item.id !== id)];
 			running = activeStates.has(execution.state);
@@ -472,14 +486,20 @@
 
 	function initialRuntimeInputs(
 		value: FlowDefinitionV1,
-		existing: Record<string, string> = {}
-	): Record<string, string> {
+		existing: Record<string, FlowInputValue> = {}
+	): Record<string, FlowInputValue> {
 		return Object.fromEntries(
 			value.nodes
 				.filter((node) => node.type === 'input')
 				.map((node) => [
 					node.config.key,
-					existing[node.config.key] ?? node.config.defaultValue ?? ''
+					node.config.kind === 'images'
+						? isFlowImages(existing[node.config.key])
+							? existing[node.config.key]
+							: { kind: 'images', fileIds: [] }
+						: typeof existing[node.config.key] === 'string'
+							? existing[node.config.key]
+							: (node.config.defaultValue ?? '')
 				])
 		);
 	}
@@ -510,7 +530,7 @@
 
 <svelte:head>
 	<title>Studio · Flows</title>
-	<meta name="description" content="Build and run constrained text Flows" />
+	<meta name="description" content="Build and run text and image Flows" />
 </svelte:head>
 
 <main>
@@ -526,11 +546,12 @@
 
 	<header class="page-header">
 		<div>
-			<p class="eyebrow">Text workflows</p>
+			<p class="eyebrow">Text and image workflows</p>
 			<h1>Flows</h1>
-			<p class="lede">Build a text graph, configure it on the canvas, and follow each node.</p>
+			<p class="lede">Connect prompts, models and images, then follow each step on the canvas.</p>
 		</div>
-		{#if data.authenticated}<button class="primary" type="button" onclick={newFlow}>New flow</button
+		{#if data.authenticated}<button class="primary" type="button" onclick={() => newFlow()}
+				>New flow</button
 			>{/if}
 	</header>
 
@@ -558,8 +579,21 @@
 						</div>
 						<span>{flows.length}</span>
 					</div>
+					<div class="form-actions">
+						<button
+							class="secondary"
+							type="button"
+							disabled={pendingUploads > 0}
+							onclick={() => newFlow('generate')}>New image flow</button
+						><button
+							type="button"
+							class="secondary"
+							disabled={pendingUploads > 0}
+							onclick={() => newFlow('edit')}>New image edit flow</button
+						>
+					</div>
 					{#if flows.length === 0}
-						<p class="muted">Create your first text Flow.</p>
+						<p class="muted">Create your first Flow.</p>
 					{:else}
 						<div class="stack">
 							{#each flows as flow (flow.id)}
@@ -608,7 +642,7 @@
 					<div class="panel-heading">
 						<div>
 							<p class="eyebrow">{selectedFlow ? 'Editor' : 'New flow'}</p>
-							<h2 id="flow-editor">{selectedFlow?.name ?? 'Text flow'}</h2>
+							<h2 id="flow-editor">{selectedFlow?.name ?? 'New flow'}</h2>
 						</div>
 						{#if selectedFlow}
 							<button
@@ -633,7 +667,7 @@
 								></textarea></label
 							>
 							<div class="form-actions">
-								<button class="primary" type="submit" disabled={saving}
+								<button class="primary" type="submit" disabled={saving || pendingUploads > 0}
 									>{saving ? 'Saving…' : selectedFlow ? 'Save changes' : 'Create flow'}</button
 								>
 								{#if selectedFlow}<span>Revision {selectedFlow.revision}</span>{/if}
@@ -694,22 +728,37 @@
 								>{/if}
 						</div>
 						<div class="run-inputs">
-							{#each selectedFlow.definition.nodes.filter((node) => node.type === 'input') as node (node.id)}
-								<label
-									>{node.config.key}<textarea
-										bind:value={runInputs[node.config.key]}
-										rows="4"
-										maxlength="16384"
-										placeholder={node.config.defaultValue ?? 'Enter text for this input'}
-									></textarea></label
-								>
-							{/each}
+							{#key selectedFlow.id}
+								{#each selectedFlow.definition.nodes.filter((node) => node.type === 'input') as node (node.id)}
+									{#if node.config.kind === 'images'}
+										<div>
+											<p>{node.config.key}</p>
+											<ImageInput
+												value={runInputs[node.config.key]}
+												disabled={running}
+												onchange={(value) => (runInputs[node.config.key] = value)}
+												onbusy={(busy) => (pendingUploads += busy ? 1 : -1)}
+											/>
+										</div>
+									{:else}<label
+											>{node.config.key}<textarea
+												value={typeof runInputs[node.config.key] === 'string'
+													? (runInputs[node.config.key] as string)
+													: ''}
+												oninput={(event) =>
+													(runInputs[node.config.key] = event.currentTarget.value)}
+												rows="4"
+												maxlength="16384"
+												placeholder={node.config.defaultValue ?? 'Enter text for this input'}
+											></textarea></label
+										>
+									{/if}{/each}{/key}
 						</div>
 						<div class="form-actions">
 							<button
 								class="primary"
 								type="button"
-								disabled={running || !hasRunInput}
+								disabled={running || pendingUploads > 0 || !hasRunInput}
 								onclick={runFlow}>{running ? 'Running…' : 'Run flow'}</button
 							>
 							{#if currentExecution && activeStates.has(currentExecution.state)}
@@ -731,7 +780,9 @@
 							{#if currentExecution.state === 'succeeded'}
 								<div class="result">
 									<p class="eyebrow">Output</p>
-									<pre>{formatOutput(currentExecution.output)}</pre>
+									{#if isFlowImages(currentExecution.output)}<ImageOutput
+											value={currentExecution.output}
+										/>{:else}<pre>{formatOutput(currentExecution.output)}</pre>{/if}
 								</div>
 							{:else if currentExecution.errorCode}
 								<p class="notice error">

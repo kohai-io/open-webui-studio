@@ -59,3 +59,17 @@ The multi-stage Dockerfile builds on Node 22, installs production dependencies o
 - Never access the Open WebUI database, storage paths, or internal model classes.
 - Never expose provider tokens, Open WebUI JWTs, API keys, or administrator credentials to browser JavaScript or logs.
 - Resolve Open WebUI references through the typed, user-scoped server adapter and revalidate access at use time.
+
+## Image flows
+
+Open `/studio/flows` and choose **New image flow** or **New image edit flow**. Name and save the flow, enter a prompt, then run it. Image editing accepts up to eight PNG, JPEG or WebP references from Media, uploaded files (10 MB each), or the sketch tool. Use **Use sketch as reference** before running; the drawing surface is temporary, while its saved image remains in Open WebUI.
+
+The Image node uses Open WebUI's configured generation or editing model. Enable the corresponding image feature in Open WebUI and grant the user image-generation permission. Image size defaults to Open WebUI's setting; optional sizes still depend on the configured provider. An existing Model node can refine a text prompt before an Image node. To chain edits, connect the earlier Image node to an Image node configured for editing, then connect that node to an Output configured as Images.
+
+Images are stored as Open WebUI files. Studio records typed file references in encrypted execution inputs and checkpoints, revalidates ownership before use, and previews results through its existing Media endpoint. Run history restores the prompt and image references; retries are explicit new runs. Image mutations are never automatically retried. Cancellation stops Studio waiting for the request, but cannot guarantee that the upstream provider stops work already accepted.
+
+Set `BODY_SIZE_LIMIT=12M` when running the Node adapter to allow multipart uploads (included in the Docker image). `FLOW_IMAGE_NODE_TIMEOUT_MS` defaults to 300000; the existing overall run deadline still applies. The image HTTP request is also capped at five minutes.
+
+This first version supports separate image references and freehand sketches. It does not composite layers, create masks, or enable agent/function execution. Existing text flows keep their format and behavior.
+
+Run `npm run test:e2e:images` for the authenticated browser checks. They use an isolated test database and local mock Open WebUI provider, with no real model calls or credentials. The usual `npm run test:integration`, `npm run check` and `npm run lint` cover the shared implementation.

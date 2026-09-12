@@ -71,6 +71,8 @@ function nodeLabel(node: FlowNodeV1): string {
 	switch (node.type) {
 		case 'input':
 			return 'Input';
+		case 'image':
+			return 'Image';
 		case 'model':
 			return 'Model';
 		case 'transform':
@@ -84,6 +86,8 @@ function nodeSummary(node: FlowNodeV1): string {
 	switch (node.type) {
 		case 'input':
 			return node.config.key;
+		case 'image':
+			return node.config.operation === 'edit' ? 'Edit reference images' : 'Generate image';
 		case 'model':
 			return node.config.modelId || 'Choose a model';
 		case 'transform':

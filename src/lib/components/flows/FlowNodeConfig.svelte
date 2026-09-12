@@ -74,20 +74,82 @@
 			/></label
 		>
 		<label
-			>Default value<textarea
-				value={node.config.defaultValue ?? ''}
-				rows="5"
-				maxlength="16384"
-				oninput={(event) => {
-					const value = inputValue(event);
+			>Input type<select
+				value={node.config.kind ?? 'text'}
+				onchange={(event) =>
 					onupdate({
 						...node,
 						config: {
 							key: node.config.key,
-							...(value === '' ? {} : { defaultValue: value })
+							kind: inputValue(event) === 'images' ? 'images' : 'text'
 						}
-					});
-				}}></textarea></label
+					})}
+				><option value="text">Text</option><option value="images">Images or sketch</option></select
+			></label
+		>
+		{#if node.config.kind !== 'images'}
+			<label
+				>Default value<textarea
+					value={node.config.defaultValue ?? ''}
+					rows="5"
+					maxlength="16384"
+					oninput={(event) => {
+						const value = inputValue(event);
+						onupdate({
+							...node,
+							config: {
+								key: node.config.key,
+								...(value === '' ? {} : { defaultValue: value })
+							}
+						});
+					}}></textarea></label
+			>
+		{/if}
+	{:else if node.type === 'image'}
+		<label
+			>Operation<select
+				value={node.config.operation}
+				onchange={(event) =>
+					onupdate({
+						...node,
+						config: {
+							...node.config,
+							operation: inputValue(event) === 'edit' ? 'edit' : 'generate'
+						}
+					})}
+				><option value="generate">Generate image</option><option value="edit"
+					>Edit reference images</option
+				></select
+			></label
+		>
+		<label
+			>Prompt template<textarea
+				value={node.config.prompt}
+				rows="7"
+				maxlength="32768"
+				oninput={(event) =>
+					onupdate({ ...node, config: { ...node.config, prompt: inputValue(event) } })}
+			></textarea><small
+				>Reference a text input or Model output with <code>{'{{node.<id>.output}}'}</code>.</small
+			></label
+		>
+		<label
+			>Image size<select
+				value={node.config.size ?? ''}
+				onchange={(event) => {
+					const size = inputValue(event) as '1024x1024' | '1536x1024' | '1024x1536' | '';
+					onupdate({ ...node, config: { ...node.config, size: size || undefined } });
+				}}
+				><option value="">Open WebUI default</option><option value="1024x1024"
+					>Square - 1024 - 1024</option
+				><option value="1536x1024">Landscape - 1536 - 1024</option><option value="1024x1536"
+					>Portrait - 1024 - 1536</option
+				></select
+			></label
+		>
+		<small
+			>Uses the image model configured in Open WebUI. Supported sizes depend on that model. For
+			editing, connect an Images input or a previous Image node.</small
 		>
 	{:else if node.type === 'model'}
 		<label
@@ -207,12 +269,14 @@
 			>Output format<select
 				value={node.config.format}
 				onchange={(event) => {
-					const format = inputValue(event) === 'json' ? 'json' : 'text';
+					const value = inputValue(event);
+					const format = value === 'images' ? 'images' : value === 'json' ? 'json' : 'text';
 					onupdate({ ...node, config: { format } });
 				}}
 			>
 				<option value="text">Text</option>
 				<option value="json">JSON</option>
+				<option value="images">Images</option>
 			</select></label
 		>
 	{/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ImageOutput from './ImageOutput.svelte';
 	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import type { FlowCanvasNode } from '$lib/flows/canvas';
 
@@ -15,6 +16,7 @@
 		<span class="status" aria-label={`Node state: ${state}`}>{state.replace('_', ' ')}</span>
 	</div>
 	<strong>{data.summary}</strong>
+	<ImageOutput value={data.execution?.payload} compact />
 	{#if data.execution?.errorCode}
 		<small>{data.execution.errorCode.replaceAll('_', ' ')}</small>
 	{/if}
