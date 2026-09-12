@@ -5,3 +5,8 @@ node_modules
 test-results
 .env*
 !.env.example
+
+data/
+*.db
+*.db-shm
+*.db-wal
