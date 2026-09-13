@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { imageFlowDefinition } from '$lib/flows/image';
+import { appendImageEdit, imageFlowDefinition } from '$lib/flows/image';
 import { isFlowImages } from '$lib/flows/types';
 import { validateFlowDefinition } from './definition';
 import { openStudioDatabase, type StudioDatabase } from '$lib/server/database/database';
@@ -72,6 +72,59 @@ function setup(
 	return { executions, execution, worker };
 }
 describe('image workflows', () => {
+	it('adds repeatable edit steps with valid connections without mutating the source flow', () => {
+		const original = imageFlowDefinition('generate');
+		const first = appendImageEdit(original)!;
+		const second = appendImageEdit(first.definition)!;
+		expect(original.nodes).toHaveLength(3);
+		expect(first.nodeId).not.toBe(second.nodeId);
+		expect(validateFlowDefinition(second.definition)).toEqual(second.definition);
+		expect(second.definition.edges).toContainEqual(
+			expect.objectContaining({ source: first.nodeId, target: second.nodeId })
+		);
+	});
+	it.each(['generate', 'edit'] as const)(
+		'identifies denied image %s access without retrying',
+		async (operation) => {
+			const { client, requests } = imageClient({ failure: 403 });
+			const h = setup(operation, client, {
+				prompt: 'A lighthouse',
+				...(operation === 'edit' ? { images: { kind: 'images', fileIds: ['ref-a'] } } : {})
+			});
+			expect(await h.worker.runOnce()).toMatchObject({
+				status: 'failed',
+				errorCode: 'image_access_denied'
+			});
+			expect(requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+			expect(h.executions.get('user-a', h.execution.id)?.errorCode).toBe('image_access_denied');
+		}
+	);
+	it('uses the saved input default when the run submits an empty text box', async () => {
+		const { client, requests } = imageClient();
+		const definition = imageFlowDefinition('generate');
+		const input = definition.nodes.find((node) => node.type === 'input')!;
+		input.config.defaultValue = 'A lighthouse at dusk';
+		const h = setup('generate', client, { prompt: '' }, definition);
+		expect(await h.worker.runOnce()).toMatchObject({ status: 'succeeded' });
+		expect(h.executions.get('user-a', h.execution.id)?.inputs.prompt).toBe('A lighthouse at dusk');
+		expect(await requests.find((request) => request.method === 'POST')!.json()).toEqual({
+			prompt: 'A lighthouse at dusk',
+			n: 1
+		});
+	});
+	it('reports an empty image prompt without dispatching generation', async () => {
+		const { client, requests } = imageClient();
+		const h = setup('generate', client, { prompt: '   ' });
+		expect(await h.worker.runOnce()).toMatchObject({
+			status: 'failed',
+			errorCode: 'image_prompt_required'
+		});
+		expect(requests).toHaveLength(0);
+		expect(
+			h.executions.get('user-a', h.execution.id)?.nodes.find((node) => node.nodeId === 'image')
+				?.errorCode
+		).toBe('image_prompt_required');
+	});
 	it('feeds a generated image into a subsequent edit and preserves both checkpoints', async () => {
 		const { client, requests } = imageClient();
 		const def = imageFlowDefinition('generate');

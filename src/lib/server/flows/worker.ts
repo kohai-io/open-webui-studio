@@ -349,6 +349,8 @@ function workerErrorCode(error: unknown): WorkerFailureCode {
 	if (error instanceof WorkerFailure) return error.code;
 	if (error instanceof TypeError) return 'validation_failed';
 	if (error instanceof OwuiError) {
+		if (error.code === 'image_prompt_required' || error.code === 'image_access_denied')
+			return error.code;
 		if (error.code === 'authentication_required') return 'authentication_required';
 		if (error.code === 'permission_denied' || error.code === 'not_found')
 			return 'dependency_not_found';

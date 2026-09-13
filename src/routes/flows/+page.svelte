@@ -1,10 +1,12 @@
 <script lang="ts">
-	import { imageFlowDefinition } from '$lib/flows/image';
+	import { flowExecutionErrorMessage } from '$lib/flows/errors';
+	import { appendImageEdit, imageFlowDefinition } from '$lib/flows/image';
 	import { isFlowImages, type FlowInputValue } from '$lib/flows/types';
 	import ImageInput from '$lib/components/flows/ImageInput.svelte';
 	import ImageOutput from '$lib/components/flows/ImageOutput.svelte';
 	import { resolve } from '$app/paths';
-	import { untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
+	import { imageCapabilityMessage, type ImageCapabilities } from '$lib/flows/capabilities';
 	import { buildLinearFlowDefinition, defaultLinearFlowDraft } from '$lib/flows/linear';
 	import { nodeExecutionStateMap } from '$lib/flows/execution-state';
 	import {
@@ -80,6 +82,118 @@
 	let progress = $state<FlowEvent[]>([]);
 	let runInputs = $state<Record<string, FlowInputValue>>(initialRuntimeInputs(initialDefinition));
 	let saving = $state(false);
+	let preparing = $state(false);
+	let panelTab = $state<'inputs' | 'results' | 'history' | 'node'>('inputs');
+	let leftPanel = $state<'library' | 'details' | null>('library');
+	let runPanelOpen = $state(true);
+	let narrowViewport = $state(false);
+	async function focusField(selector: string) {
+		await tick();
+		const field = document.querySelector<HTMLElement>(selector);
+		const panel = field?.closest('.floating-panel');
+		await Promise.all(
+			panel?.getAnimations().map((animation) => animation.finished.catch(() => {})) ?? []
+		);
+		if (field?.isConnected && !field.closest('[inert]')) field.focus();
+	}
+	function focusControl(id: string) {
+		document.getElementById(id)?.focus();
+	}
+	function closeLeftPanel() {
+		const id = leftPanel === 'details' ? 'details-toggle' : 'library-toggle';
+		leftPanel = null;
+		focusControl(id);
+	}
+	function toggleLeftPanel(panel: 'library' | 'details') {
+		if (leftPanel === panel) {
+			closeLeftPanel();
+			return;
+		}
+		leftPanel = panel;
+		if (narrowViewport) runPanelOpen = false;
+	}
+	function closeRunPanel() {
+		runPanelOpen = false;
+		focusControl('run-panel-toggle');
+	}
+	function toggleRunPanel() {
+		if (runPanelOpen) {
+			closeRunPanel();
+			return;
+		}
+		runPanelOpen = true;
+		if (narrowViewport) leftPanel = null;
+	}
+	function revealRunPanel() {
+		runPanelOpen = true;
+		if (narrowViewport) leftPanel = null;
+	}
+
+	let capabilities = $state<ImageCapabilities | null>(null);
+	let checkingCapabilities = $state(false);
+	let dirty = $derived(
+		!selectedFlow ||
+			flowName !== selectedFlow.name ||
+			flowDescription !== (selectedFlow.description ?? '') ||
+			JSON.stringify(definition) !== JSON.stringify(selectedFlow.definition)
+	);
+	let imageOperations = $derived([
+		...new Set(
+			definition.nodes.filter((node) => node.type === 'image').map((node) => node.config.operation)
+		)
+	]);
+	let imageBlocked = $derived(
+		imageOperations.some(
+			(operation) =>
+				capabilities &&
+				['disabled', 'permission_denied', 'unavailable'].includes(capabilities[operation])
+		)
+	);
+	let canAppendEdit = $derived(appendImageEdit(definition) !== null);
+	onMount(() => {
+		if (data.authenticated) void checkCapabilities();
+		const media = window.matchMedia('(max-width: 800px)');
+		const resize = () => {
+			narrowViewport = media.matches;
+			if (media.matches && runPanelOpen) leftPanel = null;
+		};
+		resize();
+		media.addEventListener('change', resize);
+		return () => media.removeEventListener('change', resize);
+	});
+	async function checkCapabilities() {
+		checkingCapabilities = true;
+		try {
+			capabilities = await requestJson<ImageCapabilities>(resolve('/api/flow-capabilities'));
+		} catch {
+			capabilities = { generate: 'unavailable', edit: 'unavailable', canManage: false };
+		} finally {
+			checkingCapabilities = false;
+		}
+		return capabilities;
+	}
+	function useResultAsReference(id: string) {
+		if (running || preparing || saving || pendingUploads > 0) return;
+		newFlow('edit');
+		flowName = 'Edit generated image';
+		runInputs = { prompt: '', images: { kind: 'images', fileIds: [id] } };
+		revealRunPanel();
+		panelTab = 'inputs';
+		void focusField('#flow-run-panel textarea');
+		message = 'Reference added to a new edit flow. Describe your changes and save and run.';
+	}
+	function addResultEditStep() {
+		if (running || preparing || saving || pendingUploads > 0) return;
+		const result = appendImageEdit(definition);
+		if (!result) return;
+		applyEditorDefinition(result.definition);
+		selectedNodeId = result.nodeId;
+		panelTab = 'node';
+		revealRunPanel();
+		void focusField('.node-config-dock select');
+		message = 'Edit step added. Set its prompt, then save and run. Earlier steps will run again.';
+	}
+
 	let pendingUploads = $state(0);
 	let running = $state(false);
 	let deleting = $state(false);
@@ -102,20 +216,26 @@
 			: []
 	);
 	let hasRunInput = $derived(
-		(selectedFlow?.definition.nodes ?? [])
+		definition.nodes
 			.filter((node) => node.type === 'input')
 			.every((node) =>
 				node.config.kind === 'images'
 					? isFlowImages(runInputs[node.config.key])
-					: typeof runInputs[node.config.key] === 'string' &&
-						((runInputs[node.config.key] as string).length > 0 ||
-							node.config.defaultValue !== undefined)
+					: (typeof runInputs[node.config.key] === 'string' &&
+							(runInputs[node.config.key] as string).trim().length > 0) ||
+						Boolean(node.config.defaultValue?.trim())
 			)
 	);
 	let executionByNodeId = $derived.by(() =>
-		nodeExecutionStateMap(currentExecution?.nodes ?? [], progress)
+		nodeExecutionStateMap(
+			!dirty && currentExecution?.flowVersion === selectedFlow?.currentVersion
+				? (currentExecution?.nodes ?? [])
+				: [],
+			!dirty && currentExecution?.flowVersion === selectedFlow?.currentVersion ? progress : []
+		)
 	);
 
+	const imageSettingsUrl = '/admin/settings/images';
 	const loginHref = resolve(`/auth/login?return=${encodeURIComponent(resolve('/flows'))}`);
 	const activeStates = new Set(['queued', 'running', 'cancel_requested']);
 	const terminalStates = new Set(['succeeded', 'failed', 'cancelled']);
@@ -153,13 +273,17 @@
 	}
 
 	function applyEditorDefinition(value: FlowDefinitionV1) {
+		if (running || preparing || saving) return;
 		editorHistory = commitFlowEditorHistory(editorHistory, value);
 	}
 
 	function newFlow(kind: 'text' | 'generate' | 'edit' = 'text') {
-		if (pendingUploads > 0) return;
+		if (pendingUploads > 0 || preparing || saving || running) return;
 		eventSource?.close();
 		eventSource = null;
+		panelTab = 'inputs';
+		leftPanel = 'details';
+		runPanelOpen = !narrowViewport;
 		selectedId = null;
 		selectedFlow = null;
 		flowName = '';
@@ -175,11 +299,12 @@
 		currentExecution = null;
 		progress = [];
 		runInputs = initialRuntimeInputs(definition);
+		void focusField('#flow-details input');
 		clearNotice();
 	}
 
 	async function selectFlow(id: string) {
-		if (pendingUploads > 0) return;
+		if (pendingUploads > 0 || preparing || saving || running) return;
 		clearNotice();
 		eventSource?.close();
 		eventSource = null;
@@ -188,6 +313,9 @@
 				requestJson<FlowRecord>(flowUrl(id)),
 				requestJson<{ items: ExecutionSummary[] }>(flowExecutionsUrl(id))
 			]);
+			panelTab = 'inputs';
+			leftPanel = null;
+			revealRunPanel();
 			selectedId = id;
 			selectedFlow = flow;
 			flowName = flow.name;
@@ -207,12 +335,12 @@
 		}
 	}
 
-	async function saveFlow() {
-		if (pendingUploads > 0) return;
+	async function saveFlow(): Promise<FlowRecord | null> {
+		if (pendingUploads > 0 || saving || running) return null;
 		clearNotice();
 		if (graphIssues.length > 0) {
 			errorMessage = graphIssues[0];
-			return;
+			return null;
 		}
 		saving = true;
 		try {
@@ -237,10 +365,19 @@
 			runInputs = initialRuntimeInputs(flow.definition, runInputs);
 			const summary: FlowSummary = flow;
 			flows = [summary, ...flows.filter((item) => item.id !== flow.id)];
-			if (creating) executions = [];
+			if (creating) {
+				executions = [];
+				panelTab = 'inputs';
+			}
+			if (narrowViewport) {
+				revealRunPanel();
+				if (!preparing) void focusField('#flow-run-panel textarea, #flow-run-panel input');
+			}
 			message = creating ? 'Flow created.' : 'Flow saved.';
+			return flow;
 		} catch (error) {
 			errorMessage = publicError(error);
+			return null;
 		} finally {
 			saving = false;
 		}
@@ -267,25 +404,51 @@
 	}
 
 	async function runFlow() {
-		if (!selectedFlow || pendingUploads > 0 || running || !hasRunInput) return;
+		if (
+			pendingUploads > 0 ||
+			running ||
+			preparing ||
+			saving ||
+			!hasRunInput ||
+			!flowName.trim() ||
+			graphIssues.length
+		)
+			return;
 		clearNotice();
-		running = true;
+		preparing = true;
 		try {
-			const execution = await requestJson<ExecutionRecord>(flowExecutionsUrl(selectedFlow.id), {
+			if (imageOperations.length) {
+				const checked = await checkCapabilities();
+				const blocked = imageOperations.find((operation) =>
+					['disabled', 'permission_denied', 'unavailable'].includes(checked[operation])
+				);
+				if (blocked) {
+					errorMessage = imageCapabilityMessage(blocked, checked[blocked]);
+					panelTab = 'inputs';
+					return;
+				}
+			}
+			const flow = dirty ? await saveFlow() : selectedFlow;
+			if (!flow) return;
+			const execution = await requestJson<ExecutionRecord>(flowExecutionsUrl(flow.id), {
 				method: 'POST',
-				headers: {
-					'content-type': 'application/json',
-					'idempotency-key': crypto.randomUUID()
-				},
-				body: JSON.stringify({ inputs: runInputs })
+				headers: { 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() },
+				body: JSON.stringify({
+					inputs: initialRuntimeInputs(flow.definition, runInputs),
+					flowVersion: flow.currentVersion
+				})
 			});
 			currentExecution = execution;
 			progress = [];
 			executions = [execution, ...executions.filter((item) => item.id !== execution.id)];
+			running = true;
+			panelTab = 'results';
+			revealRunPanel();
 			watchExecution(execution.id);
 		} catch (error) {
 			errorMessage = publicError(error);
-			running = false;
+		} finally {
+			preparing = false;
 		}
 	}
 
@@ -326,6 +489,8 @@
 			const execution = await requestJson<ExecutionRecord>(executionUrl(id));
 			if (selectedFlow) runInputs = initialRuntimeInputs(selectedFlow.definition, execution.inputs);
 			currentExecution = execution;
+			panelTab = 'results';
+			revealRunPanel();
 			executions = [execution, ...executions.filter((item) => item.id !== id)];
 			running = activeStates.has(execution.state);
 			if (running) watchExecution(id);
@@ -356,6 +521,8 @@
 	}
 
 	function selectCanvasNode(nodeId: string) {
+		panelTab = 'node';
+		revealRunPanel();
 		selectedNodeId = definition.nodes.some((node) => node.id === nodeId) ? nodeId : null;
 		selectedEdgeId = null;
 	}
@@ -439,6 +606,7 @@
 	}
 
 	function undoCanvasChange() {
+		if (running || preparing || saving) return;
 		const nextHistory = undoFlowEditorHistory(editorHistory);
 		if (nextHistory === editorHistory) return;
 		editorHistory = nextHistory;
@@ -447,6 +615,7 @@
 	}
 
 	function redoCanvasChange() {
+		if (running || preparing || saving) return;
 		const nextHistory = redoFlowEditorHistory(editorHistory);
 		if (nextHistory === editorHistory) return;
 		editorHistory = nextHistory;
@@ -462,6 +631,35 @@
 	}
 
 	function handleEditorKeydown(event: KeyboardEvent) {
+		const focused = event.target;
+		if (
+			(event.key === 'Enter' || event.key === ' ') &&
+			focused instanceof HTMLElement &&
+			focused.matches('.svelte-flow__node')
+		) {
+			const id = focused.dataset.id;
+			if (id) {
+				event.preventDefault();
+				selectCanvasNode(id);
+				void focusField(
+					'.node-config-dock input, .node-config-dock select, .node-config-dock textarea'
+				);
+			}
+			return;
+		}
+		if (event.key === 'Escape' && !event.defaultPrevented) {
+			const target = event.target;
+			if (target instanceof HTMLElement && target.closest('dialog[open], .node-picker')) return;
+			if (target instanceof HTMLElement && target.closest('.studio-menu')) {
+				target.closest('details')?.removeAttribute('open');
+				(target.closest('details')?.querySelector('summary') as HTMLElement)?.focus();
+				return;
+			}
+			if (target instanceof HTMLElement && target.closest('.left-panel')) closeLeftPanel();
+			else if (runPanelOpen) closeRunPanel();
+			else if (leftPanel) closeLeftPanel();
+			return;
+		}
 		if ((!event.ctrlKey && !event.metaKey) || event.altKey) return;
 		const target = event.target;
 		if (
@@ -534,208 +732,337 @@
 </svelte:head>
 
 <main>
-	<nav>
-		<a class="brand" href={resolve('/')}>Studio</a>
-		<a href={resolve('/agents')}>Agents</a>
-		<a href={resolve('/media')}>Media</a>
-		<a class="active" href={resolve('/flows')}>Flows</a>
-		{#if data.authenticated}
-			<form method="POST" action={resolve('/auth/logout')}><button>Sign out</button></form>
-		{/if}
-	</nav>
-
-	<header class="page-header">
-		<div>
-			<p class="eyebrow">Text and image workflows</p>
-			<h1>Flows</h1>
-			<p class="lede">Connect prompts, models and images, then follow each step on the canvas.</p>
-		</div>
-		{#if data.authenticated}<button class="primary" type="button" onclick={() => newFlow()}
-				>New flow</button
-			>{/if}
-	</header>
-
+	<h1 class="sr-only">Flows</h1>
 	{#if !data.authenticated}
 		<section class="empty-state">
 			<h2>Sign in to work with Flows.</h2>
 			<a class="primary link" href={loginHref}>Sign in</a>
 		</section>
 	{:else}
-		{#if data.state !== 'ready'}
-			<p class="notice warning">
-				Open WebUI models are unavailable. Existing Flow history remains visible.
-			</p>
-		{/if}
-		{#if message}<p class="notice success" role="status">{message}</p>{/if}
-		{#if errorMessage}<p class="notice error" role="alert">{errorMessage}</p>{/if}
-
-		<div class="workspace">
-			<aside>
-				<section class="panel flow-list" aria-labelledby="saved-flows">
-					<div class="panel-heading">
-						<div>
-							<p class="eyebrow">Library</p>
-							<h2 id="saved-flows">Saved flows</h2>
-						</div>
-						<span>{flows.length}</span>
-					</div>
-					<div class="form-actions">
+		<div class="workspace" aria-label="Flow workspace">
+			<div class="canvas-editor">
+				<FlowCanvas
+					onpickeropen={() => {
+						if (narrowViewport) {
+							leftPanel = null;
+							runPanelOpen = false;
+						}
+					}}
+					fullscreen
+					locked={running || saving || preparing}
+					leftInset={narrowViewport ? 24 : leftPanel ? 352 : 32}
+					rightInset={narrowViewport ? 24 : runPanelOpen ? 384 : 32}
+					{definition}
+					{executionByNodeId}
+					{selectedNodeId}
+					{selectedEdgeId}
+					onselect={selectCanvasNode}
+					onselectedge={selectCanvasEdge}
+					onclearselection={clearCanvasSelection}
+					onpositionchange={updateCanvasPosition}
+					onconnectnodes={connectCanvasNodes}
+					onaddnode={addCanvasNode}
+					ondeleteedge={deleteCanvasEdge}
+					onautolayout={autoLayoutCanvas}
+					onundo={undoCanvasChange}
+					onredo={redoCanvasChange}
+					{canUndo}
+					{canRedo}
+				/>
+			</div>
+			<header class="workspace-bar">
+				<div class="workspace-navigation">
+					<details class="studio-menu">
+						<summary>Studio <span class="chevron" aria-hidden="true"></span></summary>
+						<nav aria-label="Studio">
+							<a href={resolve('/')}>Home</a><a href={resolve('/agents')}>Agents</a><a
+								href={resolve('/media')}>Media</a
+							>
+							<form method="POST" action={resolve('/auth/logout')}><button>Sign out</button></form>
+						</nav>
+					</details>
+					<button
+						id="library-toggle"
+						class="secondary disclosure"
+						type="button"
+						aria-expanded={leftPanel === 'library'}
+						aria-controls="flow-library"
+						onclick={() => toggleLeftPanel('library')}
+						>Flows <span class="chevron" aria-hidden="true"></span></button
+					>
+					<button
+						id="details-toggle"
+						class="secondary disclosure flow-title"
+						aria-label={`Flow details: ${flowName || 'Untitled flow'}`}
+						type="button"
+						aria-expanded={leftPanel === 'details'}
+						aria-controls="flow-details"
+						onclick={() => toggleLeftPanel('details')}
+						><span>{flowName || 'Untitled flow'}</span><span class="details-label"
+							>Flow details</span
+						><span class="chevron" aria-hidden="true"></span></button
+					>
+				</div>
+				<div class="workspace-actions">
+					<div class="run-toolbar">
 						<button
-							class="secondary"
+							class="primary"
 							type="button"
-							disabled={pendingUploads > 0}
-							onclick={() => newFlow('generate')}>New image flow</button
-						><button
-							type="button"
-							class="secondary"
-							disabled={pendingUploads > 0}
-							onclick={() => newFlow('edit')}>New image edit flow</button
+							disabled={running ||
+								preparing ||
+								saving ||
+								pendingUploads > 0 ||
+								!hasRunInput ||
+								!flowName.trim() ||
+								graphIssues.length > 0 ||
+								(imageOperations.length > 0 && checkingCapabilities) ||
+								imageBlocked}
+							onclick={runFlow}
+							>{preparing
+								? 'Preparing…'
+								: running
+									? 'Running…'
+									: dirty
+										? 'Save and run'
+										: 'Run flow'}</button
+						>
+						{#if currentExecution && activeStates.has(currentExecution.state)}<button
+								class="secondary"
+								type="button"
+								onclick={cancelRun}>Cancel run</button
+							>{/if}
+						<span class="save-state" role="status"
+							>{saving ? 'Saving…' : dirty ? 'Unsaved changes' : 'Saved'}</span
 						>
 					</div>
-					{#if flows.length === 0}
-						<p class="muted">Create your first Flow.</p>
-					{:else}
-						<div class="stack">
-							{#each flows as flow (flow.id)}
-								<button
-									class:chosen={selectedId === flow.id}
-									type="button"
-									onclick={() => selectFlow(flow.id)}
-								>
-									<strong>{flow.name}</strong>
-									<span>v{flow.currentVersion} · {formatDate(flow.updatedAt)}</span>
-								</button>
-							{/each}
-						</div>
-					{/if}
-				</section>
-
-				{#if selectedFlow}
-					<section class="panel history" aria-labelledby="execution-history">
-						<div class="panel-heading">
-							<div>
-								<p class="eyebrow">Runs</p>
-								<h2 id="execution-history">History</h2>
-							</div>
-							<span>{executions.length}</span>
-						</div>
-						{#if executions.length === 0}
-							<p class="muted">No runs yet.</p>
-						{:else}
-							<div class="stack">
-								{#each executions as execution (execution.id)}
-									<button type="button" onclick={() => loadExecution(execution.id)}>
-										<strong class={`state-${execution.state}`}
-											>{execution.state.replace('_', ' ')}</strong
-										>
-										<span>{formatDate(execution.createdAt)}</span>
-									</button>
-								{/each}
-							</div>
-						{/if}
-					</section>
-				{/if}
-			</aside>
-
-			<div class="main-column">
-				<section class="panel editor canvas-first" aria-labelledby="flow-editor">
-					<div class="panel-heading">
-						<div>
-							<p class="eyebrow">{selectedFlow ? 'Editor' : 'New flow'}</p>
-							<h2 id="flow-editor">{selectedFlow?.name ?? 'New flow'}</h2>
-						</div>
-						{#if selectedFlow}
-							<button
-								class="danger-link"
-								type="button"
-								disabled={deleting}
-								onclick={deleteSelectedFlow}>Delete</button
-							>
-						{/if}
-					</div>
-
-					<form
-						onsubmit={(event) => {
-							event.preventDefault();
-							void saveFlow();
-						}}
+					<button
+						id="run-panel-toggle"
+						class="secondary disclosure"
+						type="button"
+						aria-expanded={runPanelOpen}
+						aria-controls="flow-run-panel"
+						onclick={toggleRunPanel}
+						>Run panel <span class="chevron" aria-hidden="true"></span></button
 					>
-						<div class="flow-metadata">
-							<label>Flow name<input bind:value={flowName} required maxlength="120" /></label>
-							<label
-								>Description<textarea bind:value={flowDescription} rows="1" maxlength="1000"
-								></textarea></label
+				</div>
+			</header>
+			<div class="canvas-notices" aria-label="Flow notifications">
+				{#if data.state !== 'ready'}<p class="notice warning">
+						Open WebUI models are unavailable. Existing Flow history remains visible.
+					</p>{/if}
+				{#if message}<div class="notice success">
+						<span role="status">{message}</span><button
+							class="icon-button"
+							type="button"
+							aria-label="Dismiss notification"
+							onclick={() => (message = '')}>×</button
+						>
+					</div>{/if}
+				{#if errorMessage}<div class="notice error">
+						<span role="alert">{errorMessage}</span><button
+							class="icon-button"
+							type="button"
+							aria-label="Dismiss error"
+							onclick={() => (errorMessage = '')}>×</button
+						>
+					</div>{/if}
+			</div>
+			<section
+				id="flow-library"
+				class="panel flow-list floating-panel left-panel"
+				class:is-open={leftPanel === 'library'}
+				inert={leftPanel !== 'library'}
+				aria-hidden={leftPanel !== 'library'}
+				aria-labelledby="saved-flows"
+			>
+				<div class="panel-heading">
+					<div>
+						<p class="eyebrow">Library</p>
+						<h2 id="saved-flows">Saved flows</h2>
+					</div>
+					<button
+						class="icon-button"
+						type="button"
+						aria-label="Collapse flow library"
+						onclick={() => closeLeftPanel()}>×</button
+					>
+				</div>
+				<div class="form-actions">
+					<button
+						class="secondary"
+						type="button"
+						disabled={pendingUploads > 0 || running || preparing || saving}
+						onclick={() => newFlow()}>New flow</button
+					>
+					<button
+						class="secondary"
+						type="button"
+						disabled={pendingUploads > 0 || running || preparing || saving}
+						onclick={() => newFlow('generate')}>New image flow</button
+					><button
+						type="button"
+						class="secondary"
+						disabled={pendingUploads > 0 || running || preparing || saving}
+						onclick={() => newFlow('edit')}>New image edit flow</button
+					>
+				</div>
+				{#if flows.length === 0}
+					<p class="muted">Create your first Flow.</p>
+				{:else}
+					<div class="stack">
+						{#each flows as flow (flow.id)}
+							<button
+								class:chosen={selectedId === flow.id}
+								type="button"
+								disabled={running || preparing || saving || pendingUploads > 0}
+								onclick={() => selectFlow(flow.id)}
 							>
-							<div class="form-actions">
-								<button class="primary" type="submit" disabled={saving || pendingUploads > 0}
-									>{saving ? 'Saving…' : selectedFlow ? 'Save changes' : 'Create flow'}</button
+								<strong>{flow.name}</strong>
+								<span>v{flow.currentVersion} · {formatDate(flow.updatedAt)}</span>
+							</button>
+						{/each}
+					</div>
+				{/if}
+			</section>
+			<section
+				id="flow-details"
+				class="panel editor floating-panel left-panel"
+				class:is-open={leftPanel === 'details'}
+				inert={leftPanel !== 'details'}
+				aria-hidden={leftPanel !== 'details'}
+				aria-labelledby="flow-editor"
+			>
+				<div class="panel-heading">
+					<div>
+						<p class="eyebrow">{selectedFlow ? 'Editor' : 'New flow'}</p>
+						<h2 id="flow-editor">{selectedFlow?.name ?? 'New flow'}</h2>
+					</div>
+					<button
+						class="icon-button"
+						type="button"
+						aria-label="Collapse flow details"
+						onclick={() => closeLeftPanel()}>×</button
+					>
+				</div>
+
+				<form
+					onsubmit={(event) => {
+						event.preventDefault();
+						void saveFlow();
+					}}
+				>
+					<div class="flow-metadata">
+						<label
+							>Flow name<input
+								disabled={running || saving || preparing}
+								bind:value={flowName}
+								required
+								maxlength="120"
+							/></label
+						>
+						<label
+							>Description<textarea
+								disabled={running || saving || preparing}
+								bind:value={flowDescription}
+								rows="1"
+								maxlength="1000"></textarea></label
+						>
+						<div class="form-actions">
+							{#if selectedFlow}
+								<button
+									class="danger-link"
+									type="button"
+									disabled={deleting || running || preparing || saving}
+									onclick={deleteSelectedFlow}>Delete</button
 								>
-								{#if selectedFlow}<span>Revision {selectedFlow.revision}</span>{/if}
-							</div>
-						</div>
-
-						{#if graphIssues.length > 0}
-							<div class="graph-feedback" role="status">
-								<strong>Finish wiring this Flow</strong>
-								<span>{graphIssues[0]}</span>
-							</div>
-						{/if}
-
-						<div class="canvas-editor">
-							<FlowCanvas
-								{definition}
-								{executionByNodeId}
-								{selectedNodeId}
-								{selectedEdgeId}
-								onselect={selectCanvasNode}
-								onselectedge={selectCanvasEdge}
-								onclearselection={clearCanvasSelection}
-								onpositionchange={updateCanvasPosition}
-								onconnectnodes={connectCanvasNodes}
-								onaddnode={addCanvasNode}
-								ondeleteedge={deleteCanvasEdge}
-								onautolayout={autoLayoutCanvas}
-								onundo={undoCanvasChange}
-								onredo={redoCanvasChange}
-								{canUndo}
-								{canRedo}
-							/>
-							{#if selectedNode}
-								<div class="node-config-overlay">
-									<FlowNodeConfig
-										node={selectedNode}
-										models={data.models}
-										{predecessorIds}
-										onupdate={updateCanvasNode}
-										ondelete={deleteCanvasNode}
-										onclose={clearCanvasSelection}
-									/>
-								</div>
 							{/if}
-						</div>
-					</form>
-				</section>
-
-				{#if selectedFlow}
-					<section class="panel runner" aria-labelledby="run-flow">
-						<div class="panel-heading">
-							<div>
-								<p class="eyebrow">Execute</p>
-								<h2 id="run-flow">Run this flow</h2>
-							</div>
-							{#if currentExecution}<strong class={`state-${currentExecution.state}`}
-									>{currentExecution.state.replace('_', ' ')}</strong
+							<button
+								class="secondary"
+								type="submit"
+								disabled={saving || preparing || running || pendingUploads > 0 || !dirty}
+								>{saving ? 'Saving…' : selectedFlow ? 'Save changes' : 'Create flow'}</button
+							>
+							{#if selectedFlow}<span class="save-state"
+									>{dirty ? 'Unsaved changes' : 'Saved'} · v{selectedFlow.currentVersion}</span
 								>{/if}
 						</div>
+					</div>
+
+					{#if graphIssues.length > 0}
+						<div class="graph-feedback" role="status">
+							<strong>Finish wiring this Flow</strong>
+							<span>{graphIssues[0]}</span>
+						</div>
+					{/if}
+				</form>
+			</section>
+
+			<section
+				id="flow-run-panel"
+				class="panel runner floating-panel right-panel"
+				class:is-open={runPanelOpen}
+				inert={!runPanelOpen}
+				aria-hidden={!runPanelOpen}
+				aria-labelledby="run-flow"
+			>
+				<div class="panel-heading">
+					<div>
+						<p class="eyebrow">Execute</p>
+						<h2 id="run-flow">Run this flow</h2>
+					</div>
+					<button
+						class="icon-button"
+						type="button"
+						aria-label="Collapse run panel"
+						onclick={() => closeRunPanel()}>×</button
+					>
+					{#if currentExecution}<strong class={`state-${currentExecution.state}`}
+							>{currentExecution.state.replace('_', ' ')}</strong
+						>{/if}
+				</div>
+
+				{#if !flowName.trim()}<p class="muted">Name your flow to save and run.</p>{/if}
+				<div class="panel-tabs" aria-label="Run panel views">
+					{#each ['inputs', 'results', 'history', 'node'] as tab (tab)}
+						<button
+							type="button"
+							aria-pressed={panelTab === tab}
+							onclick={() => (panelTab = tab as typeof panelTab)}
+							>{tab === 'node' ? 'Node' : tab[0].toUpperCase() + tab.slice(1)}</button
+						>
+					{/each}
+				</div>
+				<div class="panel-body">
+					{#if imageOperations.length && panelTab === 'inputs'}
+						<div class="readiness" aria-label="Image readiness">
+							{#each imageOperations as operation (operation)}<p>
+									{capabilities
+										? imageCapabilityMessage(operation, capabilities[operation])
+										: 'Checking image availability…'}
+								</p>{/each}
+							{#if capabilities?.canManage}<a
+									href={imageSettingsUrl}
+									target="_blank"
+									rel="external noreferrer">Open image settings ↗</a
+								>{/if}
+							<button
+								type="button"
+								disabled={checkingCapabilities || preparing}
+								onclick={() => checkCapabilities()}
+								>{checkingCapabilities ? 'Checking…' : 'Check again'}</button
+							>
+						</div>
+					{/if}
+					{#if panelTab === 'inputs'}
 						<div class="run-inputs">
-							{#key selectedFlow.id}
-								{#each selectedFlow.definition.nodes.filter((node) => node.type === 'input') as node (node.id)}
+							{#key selectedId ?? 'draft'}
+								{#each definition.nodes.filter((node) => node.type === 'input') as node (node.id)}
 									{#if node.config.kind === 'images'}
 										<div>
 											<p>{node.config.key}</p>
 											<ImageInput
 												value={runInputs[node.config.key]}
-												disabled={running}
+												disabled={running || preparing || saving}
 												onchange={(value) => (runInputs[node.config.key] = value)}
 												onbusy={(busy) => (pendingUploads += busy ? 1 : -1)}
 											/>
@@ -749,50 +1076,103 @@
 													(runInputs[node.config.key] = event.currentTarget.value)}
 												rows="4"
 												maxlength="16384"
+												disabled={running || preparing || saving}
 												placeholder={node.config.defaultValue ?? 'Enter text for this input'}
 											></textarea></label
 										>
 									{/if}{/each}{/key}
 						</div>
-						<div class="form-actions">
-							<button
-								class="primary"
-								type="button"
-								disabled={running || pendingUploads > 0 || !hasRunInput}
-								onclick={runFlow}>{running ? 'Running…' : 'Run flow'}</button
-							>
-							{#if currentExecution && activeStates.has(currentExecution.state)}
-								<button class="secondary" type="button" onclick={cancelRun}>Cancel run</button>
-							{/if}
-							<span>Save editor changes before running.</span>
-						</div>
+					{/if}
 
-						{#if currentExecution}
-							<div class="node-list" aria-label="Execution nodes">
-								{#each currentExecution.nodes as node (node.nodeId)}
-									<div>
-										<span class="node-order">{node.nodeOrder}</span>
-										<strong>{node.nodeType}</strong>
-										<em class={`state-${nodeState(node)}`}>{nodeState(node)}</em>
-									</div>
-								{/each}
-							</div>
-							{#if currentExecution.state === 'succeeded'}
-								<div class="result">
-									<p class="eyebrow">Output</p>
-									{#if isFlowImages(currentExecution.output)}<ImageOutput
-											value={currentExecution.output}
-										/>{:else}<pre>{formatOutput(currentExecution.output)}</pre>{/if}
+					{#if panelTab === 'history'}
+						<section class="panel history" aria-labelledby="execution-history">
+							<div class="panel-heading">
+								<div>
+									<p class="eyebrow">Runs</p>
+									<h2 id="execution-history">History</h2>
 								</div>
-							{:else if currentExecution.errorCode}
-								<p class="notice error">
-									Run ended with {currentExecution.errorCode.replaceAll('_', ' ')}.
-								</p>
+								<span>{executions.length}</span>
+							</div>
+							{#if executions.length === 0}
+								<p class="muted">No runs yet.</p>
+							{:else}
+								<div class="stack">
+									{#each executions as execution (execution.id)}
+										<button
+											type="button"
+											disabled={running || preparing || saving}
+											onclick={() => loadExecution(execution.id)}
+										>
+											<strong class={`state-${execution.state}`}
+												>{execution.state.replace('_', ' ')}</strong
+											>
+											<span>{formatDate(execution.createdAt)}</span>
+										</button>
+									{/each}
+								</div>
 							{/if}
+						</section>
+					{/if}
+
+					{#if panelTab === 'node' && selectedNode}
+						<div class="node-config-dock" inert={running || saving || preparing}>
+							<FlowNodeConfig
+								node={selectedNode}
+								models={data.models}
+								{predecessorIds}
+								onupdate={updateCanvasNode}
+								ondelete={deleteCanvasNode}
+								onclose={() => {
+									clearCanvasSelection();
+									closeRunPanel();
+								}}
+							/>
+						</div>
+					{/if}
+					{#if panelTab === 'node' && !selectedNode}<p class="muted">
+							Select a node on the canvas to edit its settings.
+						</p>{/if}
+					{#if panelTab === 'results' && !currentExecution}<p class="muted">
+							Run your flow to see its progress and results here.
+						</p>{/if}
+
+					{#if currentExecution && panelTab === 'results'}
+						<p class="muted">
+							Flow version {currentExecution.flowVersion} · {formatDate(currentExecution.createdAt)}
+						</p>
+						<div class="node-list" aria-label="Execution nodes">
+							{#each currentExecution.nodes as node (node.nodeId)}
+								<div>
+									<span class="node-order">{node.nodeOrder}</span>
+									<strong>{node.nodeType}</strong>
+									<em class={`state-${nodeState(node)}`}>{nodeState(node)}</em>
+								</div>
+							{/each}
+						</div>
+						{#if currentExecution.state === 'succeeded'}
+							<div class="result">
+								{#each Object.entries(currentExecution.inputs) as [key, value] (key)}{#if isFlowImages(value)}<p
+											class="eyebrow"
+										>
+											Reference · {key}
+										</p>
+										<ImageOutput {value} compact />{/if}{/each}
+								<p class="eyebrow">Output</p>
+								{#if isFlowImages(currentExecution.output)}<ImageOutput
+										value={currentExecution.output}
+										onuse={useResultAsReference}
+										onedit={canAppendEdit ? addResultEditStep : undefined}
+										disabled={running || preparing || saving || pendingUploads > 0 || dirty}
+									/>{:else}<pre>{formatOutput(currentExecution.output)}</pre>{/if}
+							</div>
+						{:else if currentExecution.errorCode}
+							<p class="notice error">
+								{flowExecutionErrorMessage(currentExecution.errorCode)}
+							</p>
 						{/if}
-					</section>
-				{/if}
-			</div>
+					{/if}
+				</div>
+			</section>
 		</div>
 	{/if}
 </main>
@@ -804,157 +1184,309 @@
 	:global(body) {
 		margin: 0;
 		min-width: 320px;
-		background:
-			radial-gradient(circle at 82% 2%, rgba(110, 231, 183, 0.12), transparent 32rem), #0b0d10;
-		color: #f5f7f8;
+		background: #0b0d10;
+		color: #edf0f3;
 		font-family: Inter, ui-sans-serif, system-ui, sans-serif;
 	}
 	main {
-		width: min(110rem, calc(100% - 3rem));
-		margin: auto;
-		padding: 1.5rem 0 5rem;
+		--flow-control-height: 2.25rem;
+		--flow-control-font: 0.875rem;
+		--flow-label-font: 0.8125rem;
+		--flow-help-font: 0.75rem;
+		--flow-radius: 0.5rem;
+		font-size: 0.875rem;
+		line-height: 1.5;
 	}
-	nav {
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
+	}
+	.workspace {
+		position: relative;
+		isolation: isolate;
+		width: 100%;
+		height: 100dvh;
+		min-height: 24rem;
+		overflow: hidden;
+	}
+	.canvas-editor {
+		position: absolute;
+		inset: 0;
+	}
+	.workspace-bar {
+		position: absolute;
+		z-index: 10;
+		top: 1rem;
+		left: 1rem;
+		right: 1rem;
 		display: flex;
 		align-items: center;
-		gap: 1.25rem;
+		justify-content: space-between;
+		gap: 0.75rem;
+		pointer-events: none;
+	}
+	.workspace-navigation,
+	.workspace-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.375rem;
+		min-width: 0;
+		padding: 0.375rem;
+		background: #141a20;
+		border: 1px solid #343e47;
+		border-radius: 0.75rem;
+		box-shadow: 0 4px 20px #0004;
+		pointer-events: auto;
+	}
+	.workspace-navigation {
+		flex-shrink: 1;
+	}
+	.workspace-actions {
+		flex-shrink: 0;
+	}
+	.studio-menu {
+		position: relative;
+	}
+	.studio-menu summary {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		list-style: none;
+		min-height: var(--flow-control-height);
+		padding: 0.4375rem 0.625rem;
+		font-weight: 600;
+		cursor: pointer;
+		border-radius: var(--flow-radius);
+	}
+	.studio-menu summary::-webkit-details-marker {
+		display: none;
+	}
+	nav {
+		animation: menu-reveal 160ms ease-out;
+		position: absolute;
+		left: -0.375rem;
+		top: calc(100% + 0.875rem);
+		width: 12rem;
+		padding: 0.375rem;
+		border: 1px solid #39414b;
+		background: #141a20;
+		border-radius: 0.75rem;
+		box-shadow: 0 8px 24px #0006;
 	}
 	nav a,
 	nav button {
+		display: flex;
+		width: 100%;
+		min-height: var(--flow-control-height);
+		align-items: center;
+		padding: 0.5rem 0.75rem;
 		border: 0;
+		border-radius: var(--flow-radius);
 		background: none;
-		color: #aeb6bf;
+		color: #d2dce4;
 		font: inherit;
 		text-decoration: none;
 		cursor: pointer;
 	}
-	.brand {
-		margin-right: auto;
-		color: #f5f7f8;
-		font-weight: 750;
+	nav a:hover,
+	nav button:hover,
+	.studio-menu summary:hover {
+		background: #26313b;
 	}
-	nav .active {
-		color: #6ee7b7;
+	.flow-title {
+		gap: 0.5rem;
+		max-width: 25rem;
 	}
-	.page-header {
-		display: flex;
-		align-items: end;
-		justify-content: space-between;
-		gap: 2rem;
-		padding: clamp(3.5rem, 8vh, 6rem) 0 2rem;
+	.flow-title > span:first-child {
+		max-width: 16rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
-	.eyebrow {
-		margin: 0;
-		color: #6ee7b7;
-		font-size: 0.7rem;
-		font-weight: 750;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
+	.details-label {
+		color: #a4adb7;
+		font-size: var(--flow-help-font);
 	}
-	h1 {
-		margin: 0.35rem 0 0.7rem;
-		font-size: clamp(3.5rem, 9vw, 7rem);
-		letter-spacing: -0.07em;
-		line-height: 0.95;
+	.disclosure {
+		gap: 0.5rem;
 	}
-	h2 {
-		margin: 0.25rem 0 0;
-		font-size: 1.35rem;
-		letter-spacing: -0.025em;
+	.chevron {
+		width: 0.4375rem;
+		height: 0.4375rem;
+		flex-shrink: 0;
+		border-right: 1.5px solid currentColor;
+		border-bottom: 1.5px solid currentColor;
+		transform: translateY(-0.125rem) rotate(45deg);
+		display: inline-block;
+		transition: transform 180ms ease;
 	}
-	.lede,
-	.muted,
-	.form-actions span {
-		color: #929ca7;
+	.disclosure[aria-expanded='true'] .chevron,
+	.studio-menu[open] .chevron {
+		transform: translateY(0.125rem) rotate(225deg);
 	}
-	.workspace {
-		display: grid;
-		grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr);
-		gap: 1rem;
-		align-items: start;
-	}
-	aside,
-	.main-column {
-		display: grid;
-		gap: 1rem;
+	.disclosure[aria-expanded='true'] {
+		border-color: #557565;
+		background: #21382c;
 	}
 	.panel {
-		border: 1px solid #252d35;
-		border-radius: 1rem;
-		background: rgba(17, 21, 26, 0.94);
-		padding: 1.2rem;
+		padding: 1rem;
+		min-width: 0;
+		border: 1px solid #343e47;
+		border-radius: 0.875rem;
+		background: #141a20;
+		box-shadow: 0 8px 28px #0005;
+	}
+	.floating-panel {
+		position: absolute;
+		z-index: 5;
+		top: 5.5rem;
+		max-height: calc(100% - 11rem);
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		opacity: 0;
+		visibility: hidden;
+		pointer-events: none;
+		transform: translateX(-0.75rem);
+		transition:
+			opacity 180ms ease,
+			transform 180ms ease,
+			visibility 180ms;
+	}
+	.floating-panel.is-open {
+		opacity: 1;
+		visibility: visible;
+		pointer-events: auto;
+		transform: translateX(0);
+	}
+	.left-panel {
+		left: 1rem;
+		width: 20rem;
+	}
+	.right-panel {
+		right: 1rem;
+		width: 22rem;
+		transform: translateX(0.75rem);
 	}
 	.panel-heading {
 		display: flex;
 		align-items: start;
 		justify-content: space-between;
-		gap: 1rem;
+		gap: 0.75rem;
 		margin-bottom: 1rem;
 	}
-	.panel-heading > span {
-		color: #7f8a95;
+	.panel-heading > strong {
+		color: #a4adb7;
+		font-size: var(--flow-help-font);
+		font-weight: 500;
+	}
+	.runner .panel-heading {
+		flex-wrap: wrap;
+		margin-bottom: 0;
+	}
+	.runner .panel-heading > strong {
+		flex-basis: 100%;
+	}
+	.eyebrow {
+		margin: 0;
+		color: #a4b3ad;
+		font-size: var(--flow-help-font);
+		font-weight: 500;
+	}
+	h2 {
+		margin: 0.125rem 0 0;
+		font-size: 1rem;
+		font-weight: 600;
+		line-height: 1.5;
+		overflow-wrap: anywhere;
+	}
+	.muted,
+	.form-actions span {
+		color: #a4adb7;
+		font-size: var(--flow-label-font);
+	}
+	.flow-list .form-actions {
+		display: grid;
+		gap: 0.5rem;
+		margin-bottom: 1rem;
+	}
+	.flow-list .form-actions button {
+		justify-content: start;
 	}
 	.stack {
 		display: grid;
-		gap: 0.45rem;
+		gap: 0.375rem;
 	}
 	.stack button {
 		display: flex;
+		flex-direction: column;
 		width: 100%;
-		justify-content: space-between;
-		gap: 0.8rem;
-		padding: 0.8rem;
+		min-width: 0;
+		gap: 0.25rem;
+		padding: 0.625rem;
 		border: 1px solid transparent;
-		border-radius: 0.7rem;
+		border-radius: var(--flow-radius);
 		background: #0c1014;
-		color: #f5f7f8;
+		color: #edf0f3;
+		font: inherit;
 		text-align: left;
 		cursor: pointer;
 	}
-	.stack button span {
-		color: #7f8a95;
-		font-size: 0.75rem;
+	.stack button strong {
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		white-space: nowrap;
+		font-weight: 500;
+	}
+	.stack button span {
+		color: #a4adb7;
+		font-size: var(--flow-help-font);
 	}
 	.stack button.chosen {
-		border-color: #4d8b73;
-		background: #13231d;
+		border-color: #426d59;
+		background: #15221c;
 	}
-	.editor form,
-	.runner {
+	.editor form {
 		display: grid;
 		gap: 1rem;
 	}
 	label {
 		display: grid;
-		gap: 0.45rem;
+		gap: 0.375rem;
 		color: #c7ced5;
-		font-size: 0.85rem;
+		font-size: var(--flow-label-font);
+		font-weight: 500;
 	}
 	input,
 	textarea {
 		width: 100%;
-		border: 1px solid #303944;
-		border-radius: 0.7rem;
+		min-height: var(--flow-control-height);
+		border: 1px solid #39414b;
+		border-radius: var(--flow-radius);
 		background: #0b0f13;
-		color: #f5f7f8;
-		padding: 0.75rem 0.85rem;
+		color: #edf0f3;
+		padding: 0.4375rem 0.625rem;
 		font: inherit;
+		font-size: var(--flow-control-font);
+		font-weight: 400;
+		line-height: 1.25rem;
 	}
 	textarea {
 		resize: vertical;
-		line-height: 1.5;
 	}
 	input:focus,
 	textarea:focus {
-		outline: 2px solid #4d8b73;
+		outline: 2px solid #6ee7b7;
 		outline-offset: 1px;
 	}
 	.flow-metadata {
 		display: grid;
-		grid-template-columns: minmax(12rem, 0.8fr) minmax(16rem, 1.4fr) auto;
 		gap: 1rem;
-		align-items: end;
 	}
 	.form-actions {
 		display: flex;
@@ -962,13 +1494,25 @@
 		gap: 0.75rem;
 		flex-wrap: wrap;
 	}
+	.form-actions .danger-link {
+		order: 1;
+	}
 	.primary,
-	.secondary {
-		border: 0;
-		border-radius: 999px;
-		padding: 0.72rem 1rem;
+	.secondary,
+	.danger-link,
+	.icon-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-height: var(--flow-control-height);
+		border: 1px solid transparent;
+		border-radius: var(--flow-radius);
+		padding: 0.4375rem 0.75rem;
 		font: inherit;
-		font-weight: 750;
+		font-size: var(--flow-control-font);
+		line-height: 1.25rem;
+		font-weight: 500;
+		white-space: nowrap;
 		cursor: pointer;
 	}
 	.primary {
@@ -976,51 +1520,152 @@
 		color: #082a1d;
 	}
 	.primary.link {
-		display: inline-block;
 		text-decoration: none;
 	}
 	.secondary {
-		background: #303944;
-		color: #f5f7f8;
+		border-color: #39414b;
+		background: #1b222a;
+		color: #e4e9ed;
+	}
+	.danger-link {
+		background: transparent;
+		color: #ffabb6;
+	}
+	.icon-button {
+		width: var(--flow-control-height);
+		flex-shrink: 0;
+		padding: 0;
+		background: transparent;
+		color: #b9c6cf;
+		font-size: 1.25rem;
+	}
+	.primary:hover:not(:disabled) {
+		background: #8aefc6;
+	}
+	.secondary:hover:not(:disabled),
+	.stack button:hover:not(:disabled),
+	.icon-button:hover:not(:disabled) {
+		border-color: #6b7a84;
+		background: #26313b;
+	}
+	.danger-link:hover:not(:disabled) {
+		background: #2b171b;
 	}
 	button:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
-	.danger-link {
-		border: 0;
-		background: none;
-		color: #ff9da8;
-		cursor: pointer;
-	}
-	.canvas-editor {
-		position: relative;
-	}
-	.node-config-overlay {
-		position: absolute;
-		z-index: 5;
-		top: 1rem;
-		right: 1rem;
-		bottom: 1rem;
+	button:focus-visible,
+	a:focus-visible,
+	summary:focus-visible {
+		outline: 2px solid #6ee7b7;
+		outline-offset: 3px;
 	}
 	.graph-feedback {
 		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		padding: 0.65rem 0.85rem;
+		flex-wrap: wrap;
+		gap: 0.375rem;
+		padding: 0.75rem;
 		border: 1px solid #64562d;
-		border-radius: 0.7rem;
+		border-radius: var(--flow-radius);
 		background: #29220f;
 		color: #f8d477;
-		font-size: 0.78rem;
+		font-size: var(--flow-label-font);
 	}
 	.graph-feedback span {
-		color: #c8b775;
+		color: #dfcc85;
+	}
+	.runner {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+	.run-toolbar {
+		display: flex;
+		gap: 0.625rem;
+		align-items: center;
+	}
+	.save-state {
+		font-size: var(--flow-help-font);
+		color: #a4b3ad;
+	}
+	.panel-tabs {
+		display: flex;
+		border-bottom: 1px solid #303944;
+	}
+	.panel-tabs button {
+		flex: 1;
+		min-height: var(--flow-control-height);
+		padding: 0.4375rem 0.25rem;
+		border: 0;
+		border-bottom: 2px solid transparent;
+		background: transparent;
+		color: #aeb6bf;
+		cursor: pointer;
+		font: inherit;
+		font-size: var(--flow-label-font);
+		font-weight: 500;
+	}
+	.panel-tabs button[aria-pressed='true'] {
+		color: #91ecc3;
+		border-bottom-color: #6ee7b7;
+	}
+	.panel-tabs button:hover {
+		color: #edf0f3;
+	}
+	.panel-body {
+		overflow-y: auto;
+		min-height: 0;
+		padding: 0.25rem;
+		margin: -0.25rem;
 	}
 	.run-inputs {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+		grid-template-columns: minmax(0, 1fr);
 		gap: 1rem;
+	}
+	.readiness {
+		border: 1px solid #38483e;
+		background: #101c16;
+		border-radius: var(--flow-radius);
+		padding: 0.75rem;
+		margin-bottom: 1rem;
+		font-size: var(--flow-label-font);
+	}
+	.readiness p {
+		margin: 0 0 0.5rem;
+	}
+	.readiness a,
+	.readiness button {
+		display: inline-flex;
+		align-items: center;
+		min-height: var(--flow-control-height);
+		color: #a7e9ca;
+		font: inherit;
+		margin-right: 0.75rem;
+	}
+	.readiness button {
+		background: transparent;
+		border: 0;
+		text-decoration: underline;
+		cursor: pointer;
+		padding: 0;
+	}
+	.node-config-dock :global(.config) {
+		width: 100%;
+		max-width: 100%;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		box-shadow: none;
+	}
+	.runner .history {
+		border: 0;
+		padding: 0;
+		box-shadow: none;
+	}
+	.history .stack {
+		margin-top: 1rem;
 	}
 	.node-list {
 		display: grid;
@@ -1028,27 +1673,30 @@
 	}
 	.node-list > div {
 		display: grid;
-		grid-template-columns: 2rem 1fr auto;
+		grid-template-columns: 1.5rem 1fr auto;
 		align-items: center;
-		gap: 0.7rem;
-		padding: 0.7rem;
-		border-radius: 0.65rem;
+		gap: 0.625rem;
+		padding: 0.625rem;
+		border-radius: var(--flow-radius);
 		background: #0b0f13;
 		text-transform: capitalize;
 	}
+	.node-list strong {
+		font-weight: 500;
+	}
 	.node-order {
 		display: grid;
-		width: 1.7rem;
-		height: 1.7rem;
+		width: 1.5rem;
+		height: 1.5rem;
 		place-items: center;
-		border-radius: 50%;
+		border-radius: 0.375rem;
 		background: #23302a;
 		color: #6ee7b7;
-		font-size: 0.75rem;
+		font-size: var(--flow-help-font);
 	}
 	em {
 		font-style: normal;
-		font-size: 0.75rem;
+		font-size: var(--flow-help-font);
 	}
 	.state-succeeded {
 		color: #6ee7b7 !important;
@@ -1063,27 +1711,47 @@
 		color: #ff9da8 !important;
 	}
 	.result {
-		margin-top: 0.5rem;
-		padding: 1rem;
+		margin-top: 0.75rem;
+		padding: 0.75rem;
 		border: 1px solid #294b3e;
-		border-radius: 0.75rem;
+		border-radius: 0.5rem;
 		background: #0b1712;
 	}
+	.result > .eyebrow {
+		margin-bottom: 0.5rem;
+	}
 	pre {
-		margin: 0.7rem 0 0;
+		margin: 0.75rem 0 0;
 		overflow: auto;
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 		font:
-			0.9rem/1.5 ui-monospace,
+			0.8125rem/1.5 ui-monospace,
 			SFMono-Regular,
 			Consolas,
 			monospace;
 	}
+	.canvas-notices {
+		position: absolute;
+		z-index: 12;
+		bottom: 6rem;
+		left: 50%;
+		transform: translateX(-50%);
+		width: min(30rem, calc(100% - 2rem));
+		pointer-events: none;
+	}
 	.notice {
-		padding: 0.8rem 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+		margin: 0.5rem 0 0;
+		padding: 0.5rem 0.75rem;
 		border: 1px solid #303944;
-		border-radius: 0.75rem;
+		border-radius: var(--flow-radius);
+		box-shadow: 0 4px 16px #0003;
+		pointer-events: auto;
+		font-size: var(--flow-label-font);
 	}
 	.notice.warning {
 		background: #29220f;
@@ -1099,57 +1767,88 @@
 		color: #ffc5cc;
 	}
 	.empty-state {
+		margin: 3rem auto;
+		max-width: 30rem;
 		padding: 2rem;
 		border: 1px solid #252d35;
-		border-radius: 1rem;
+		border-radius: 0.75rem;
 		background: #11151a;
 	}
-	@media (max-width: 820px) {
-		main {
-			width: min(100% - 2rem, 88rem);
+	@media (max-width: 1100px) {
+		.details-label,
+		.workspace-actions .save-state {
+			display: none;
 		}
-		.workspace {
-			grid-template-columns: 1fr;
-		}
-		aside {
-			grid-template-columns: 1fr 1fr;
-		}
-		.page-header {
-			align-items: start;
-		}
-		.flow-metadata {
-			grid-template-columns: 1fr 1fr;
-		}
-		.flow-metadata .form-actions {
-			grid-column: 1 / -1;
-		}
-		.node-config-overlay {
-			top: auto;
-			left: 1rem;
-			max-height: 70%;
+		.flow-title > span:first-child {
+			max-width: 10rem;
 		}
 	}
-	@media (max-width: 600px) {
-		nav {
-			gap: 0.75rem;
+	@media (max-width: 800px) {
+		.workspace-bar {
+			top: 0.5rem;
+			left: 0.5rem;
+			right: 0.5rem;
 			flex-wrap: wrap;
+			gap: 0.5rem;
 		}
-		.brand {
+		.workspace-navigation {
 			width: 100%;
 		}
-		.page-header {
-			align-items: stretch;
-			flex-direction: column;
+		.workspace-actions {
+			margin-left: auto;
 		}
-		aside,
-		.flow-metadata {
-			grid-template-columns: 1fr;
+		.flow-title {
+			flex: 1;
+			justify-content: space-between;
 		}
-		.flow-metadata .form-actions {
-			grid-column: auto;
+		.flow-title > span:first-child {
+			max-width: min(12rem, 40vw);
+		}
+		.floating-panel {
+			top: 8rem;
+			bottom: 6rem;
+			max-height: none;
+			left: 0.5rem;
+			right: 0.5rem;
+			width: auto;
+			transform: translateY(0.75rem);
+		}
+		.floating-panel.is-open {
+			transform: translateY(0);
 		}
 		.panel {
-			padding: 1rem;
+			padding: 0.875rem;
+		}
+		.canvas-notices {
+			bottom: 6rem;
+			z-index: 8;
+		}
+	}
+	@media (pointer: coarse) {
+		main {
+			--flow-control-height: 2.75rem;
+		}
+		.floating-panel {
+			top: 9rem;
+		}
+	}
+	@keyframes menu-reveal {
+		from {
+			opacity: 0;
+			transform: translateY(-0.375rem);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		nav {
+			animation: none;
+		}
+		.floating-panel,
+		.chevron {
+			transition: none;
 		}
 	}
 </style>

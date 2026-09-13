@@ -17,6 +17,8 @@ export type FlowExecutionState =
 export type FlowNodeState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export type FlowExecutionErrorCode =
+	| 'image_prompt_required'
+	| 'image_access_denied'
 	| 'validation_failed'
 	| 'not_found'
 	| 'conflict'
@@ -935,7 +937,10 @@ function runtimeInputs(
 	const result: Record<string, FlowInputValue> = {};
 	for (const node of inputNodes) {
 		const supplied = value[node.config.key];
-		const resolved = supplied ?? node.config.defaultValue;
+		const resolved =
+			supplied === ''
+				? (node.config.defaultValue ?? supplied)
+				: (supplied ?? node.config.defaultValue);
 		if (node.config.kind === 'images') {
 			if (!isFlowImages(resolved))
 				throw new FlowExecutionError('validation_failed', `$.inputs.${node.config.key}`);
@@ -1068,6 +1073,8 @@ function hashClaim(token: string): string {
 
 function stableExecutionError(value: string): string {
 	const allowed = new Set([
+		'image_prompt_required',
+		'image_access_denied',
 		'validation_failed',
 		'authentication_required',
 		'dependency_not_found',

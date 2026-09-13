@@ -157,11 +157,16 @@
 		text-overflow: ellipsis;
 	}
 	button {
-		border: 1px solid #44685b;
-		background: #182c24;
-		color: #e5fff3;
-		border-radius: 0.5rem;
-		padding: 0.5rem;
+		border: 1px solid #39414b;
+		background: #1b222a;
+		color: #e4e9ed;
+		border-radius: var(--flow-radius, 0.375rem);
+		min-height: var(--flow-control-height, 2.25rem);
+		padding: 0.4375rem 0.75rem;
+		font: inherit;
+		font-size: var(--flow-control-font, 0.875rem);
+		font-weight: 500;
+		line-height: 1.25rem;
 		cursor: pointer;
 	}
 	button:disabled {
@@ -171,15 +176,57 @@
 	.library {
 		border: 1px solid #34443c;
 		padding: 0.7rem;
-		border-radius: 0.5rem;
+		border-radius: var(--flow-radius, 0.375rem);
 	}
 	small {
-		color: #9ba7b2;
+		color: #a4adb7;
+		font-size: var(--flow-help-font, 0.75rem);
+		line-height: 1.5;
 	}
 	input {
-		max-width: 17rem;
+		width: 100%;
+		max-width: 100%;
+		font: inherit;
+		font-size: var(--flow-help-font, 0.75rem);
+		color: #a4adb7;
 	}
 	p[role='alert'] {
 		color: #ffb4be;
+	}
+
+	label {
+		font-size: var(--flow-label-font, 0.8125rem);
+		color: #c7ced5;
+	}
+	button:hover:not(:disabled) {
+		border-color: #6b7a84;
+		background: #222d34;
+	}
+	button:focus-visible,
+	input:focus-visible {
+		outline: 2px solid #6ee7b7;
+		outline-offset: 2px;
+	}
+
+	label {
+		display: grid;
+		gap: 0.375rem;
+		width: 100%;
+	}
+	input::file-selector-button {
+		min-height: var(--flow-control-height, 2.25rem);
+		padding: 0.4375rem 0.75rem;
+		margin-right: 0.5rem;
+		border: 1px solid #39414b;
+		border-radius: var(--flow-radius, 0.375rem);
+		background: #1b222a;
+		color: #e4e9ed;
+		font: inherit;
+		font-size: var(--flow-control-font, 0.875rem);
+		line-height: 1.25rem;
+		cursor: pointer;
+	}
+	input:disabled {
+		opacity: 0.5;
 	}
 </style>

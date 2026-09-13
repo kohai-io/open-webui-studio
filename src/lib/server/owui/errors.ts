@@ -1,4 +1,6 @@
 export type OwuiErrorCode =
+	| 'image_prompt_required'
+	| 'image_access_denied'
 	| 'authentication_required'
 	| 'permission_denied'
 	| 'not_found'

@@ -7,6 +7,7 @@
 		Panel,
 		SvelteFlow,
 		type Connection,
+		type FitViewOptions,
 		type NodeTypes
 	} from '@xyflow/svelte';
 	import '@xyflow/svelte/dist/style.css';
@@ -23,6 +24,11 @@
 	import type { FlowDefinitionV1, FlowPositionV1 } from '$lib/flows/types';
 
 	interface Props {
+		onpickeropen?: () => void;
+		fullscreen?: boolean;
+		locked?: boolean;
+		leftInset?: number;
+		rightInset?: number;
 		definition: FlowDefinitionV1;
 		executionByNodeId: ReadonlyMap<string, FlowExecutionNodeView>;
 		selectedNodeId: string | null;
@@ -42,6 +48,11 @@
 	}
 
 	let {
+		onpickeropen,
+		fullscreen = false,
+		locked = false,
+		leftInset = 32,
+		rightInset = 32,
 		definition,
 		executionByNodeId,
 		selectedNodeId,
@@ -59,6 +70,11 @@
 		canUndo,
 		canRedo
 	}: Props = $props();
+	let fitOptions: FitViewOptions = $derived({
+		padding: { top: '160px', bottom: '100px', left: `${leftInset}px`, right: `${rightInset}px` },
+		minZoom: 0.15,
+		maxZoom: 1
+	});
 	const nodeTypes = { flowNode: FlowNodeCard } satisfies NodeTypes;
 	let nodes = $state.raw<FlowCanvasNode[]>([]);
 	let edges = $state.raw<FlowCanvasEdge[]>([]);
@@ -85,9 +101,14 @@
 		edges = view.edges;
 	});
 
+	$effect(() => {
+		if (locked) pickerOpen = false;
+	});
 	async function openPicker() {
+		if (locked) return;
 		catalogueQuery = '';
 		pickerOpen = true;
+		onpickeropen?.();
 		await tick();
 		searchInput?.focus();
 	}
@@ -95,9 +116,11 @@
 	function closePicker() {
 		pickerOpen = false;
 		catalogueQuery = '';
+		document.querySelector<HTMLButtonElement>('.add-node')?.focus();
 	}
 
 	function chooseNode(item: FlowNodeCatalogueItem) {
+		if (locked) return;
 		if (item.type === 'output' && definition.nodes.some((node) => node.type === 'output')) return;
 		const sourceNodeId = item.type === 'input' ? null : (guideFromNode?.id ?? null);
 		onaddnode(item.type, sourceNodeId);
@@ -105,7 +128,12 @@
 	}
 
 	function pickerKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape') closePicker();
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			event.stopPropagation();
+			closePicker();
+			document.querySelector<HTMLButtonElement>('.add-node')?.focus();
+		}
 	}
 
 	function guidedActionLabel(item: FlowNodeCatalogueItem): string {
@@ -116,57 +144,69 @@
 	}
 </script>
 
-<div class="canvas" data-testid="flow-canvas">
+<div class="canvas" class:fullscreen data-testid="flow-canvas">
 	<SvelteFlow
 		bind:nodes
 		bind:edges
 		{nodeTypes}
 		fitView
-		fitViewOptions={{ padding: 0.22, minZoom: 0.45, maxZoom: 1.15 }}
-		nodesConnectable={true}
+		minZoom={0.15}
+		fitViewOptions={fitOptions}
+		nodesConnectable={!locked}
+		nodesDraggable={!locked}
 		elementsSelectable={true}
 		deleteKey={null}
 		multiSelectionKey={null}
 		onnodeclick={({ node }) => onselect(node.id)}
 		onedgeclick={({ edge }) => onselectedge(edge.id)}
 		onpaneclick={onclearselection}
-		onconnect={(connection) => onconnectnodes(connection)}
+		onconnect={(connection) => {
+			if (!locked) onconnectnodes(connection);
+		}}
 		isValidConnection={(connection) => flowConnectionError(definition, connection) === null}
 		onnodedragstop={({ targetNode }) => {
-			if (targetNode) onpositionchange(targetNode.id, targetNode.position);
+			if (targetNode && !locked) onpositionchange(targetNode.id, targetNode.position);
 		}}
 		colorMode="dark"
 		aria-label="Flow canvas"
 	>
-		<Panel position="top-left" class="editor-tools">
+		<Panel position="bottom-center" class="editor-tools">
 			<div class="tool-row">
-				<button class="add-node" type="button" onclick={openPicker}>
+				<button
+					class="add-node"
+					type="button"
+					disabled={locked}
+					aria-expanded={pickerOpen}
+					aria-controls="flow-node-picker"
+					onclick={() => (pickerOpen ? closePicker() : openPicker())}
+				>
 					<span aria-hidden="true">+</span>
-					{guideFromNode ? `Next after ${guideFromNode.id}` : 'Add node'}
+					Add node
 				</button>
 				<button
 					type="button"
-					disabled={!canUndo}
+					disabled={locked || !canUndo}
 					title="Undo canvas change (Ctrl/Cmd+Z)"
 					aria-label="Undo canvas change"
 					onclick={onundo}>Undo</button
 				>
 				<button
 					type="button"
-					disabled={!canRedo}
+					disabled={locked || !canRedo}
 					title="Redo canvas change (Ctrl/Cmd+Shift+Z)"
 					aria-label="Redo canvas change"
 					onclick={onredo}>Redo</button
 				>
 				<button
 					type="button"
-					disabled={definition.nodes.length < 2}
+					disabled={locked || definition.nodes.length < 2}
 					title="Arrange nodes by dependency"
 					onclick={onautolayout}>Auto layout</button
 				>
 			</div>
 			{#if pickerOpen}
 				<div
+					id="flow-node-picker"
 					class="node-picker"
 					role="dialog"
 					tabindex="-1"
@@ -202,7 +242,7 @@
 							<button
 								class="catalogue-item"
 								type="button"
-								disabled={unavailable}
+								disabled={locked || unavailable}
 								onclick={() => chooseNode(item)}
 							>
 								<span class="item-heading">
@@ -219,17 +259,15 @@
 				</div>
 			{/if}
 		</Panel>
-		<Panel position="top-right" class="canvas-help">
-			Click a node to edit it. Drag between ports to connect nodes.
-		</Panel>
 		{#if selectedEdgeId}
 			<Panel position="bottom-center" class="edge-actions">
 				<span>Connection selected</span>
-				<button type="button" onclick={() => ondeleteedge(selectedEdgeId)}>Delete connection</button
+				<button type="button" disabled={locked} onclick={() => ondeleteedge(selectedEdgeId)}
+					>Delete connection</button
 				>
 			</Panel>
 		{/if}
-		<Controls showLock={false} />
+		<Controls showLock={false} fitViewOptions={fitOptions} />
 		<Background variant={BackgroundVariant.Dots} patternColor="#34413c" gap={22} size={1.2} />
 		<MiniMap
 			bgColor="#0b0f13"
@@ -241,14 +279,17 @@
 		/>
 	</SvelteFlow>
 </div>
+{#if !fullscreen}<p class="canvas-help">
+		Select a node to edit its settings. Drag between ports to connect nodes.
+	</p>{/if}
 
 <style>
 	.canvas {
-		height: clamp(36rem, 72vh, 52rem);
-		min-height: 36rem;
+		height: clamp(24rem, 55vh, 38rem);
+		min-height: 24rem;
 		overflow: hidden;
 		border: 1px solid #252d35;
-		border-radius: 0.9rem;
+		border-radius: 0.75rem;
 		background: #090c0f;
 	}
 	:global(.svelte-flow__node-flowNode.selected article) {
@@ -270,7 +311,6 @@
 		fill: #d7dde2;
 	}
 	:global(.editor-tools),
-	:global(.canvas-help),
 	:global(.edge-actions) {
 		border: 1px solid #303944;
 		border-radius: 0.75rem;
@@ -280,7 +320,7 @@
 	:global(.editor-tools) {
 		display: grid;
 		gap: 0.5rem;
-		padding: 0.65rem;
+		padding: 0.5rem;
 	}
 	:global(.tool-row) {
 		display: flex;
@@ -290,13 +330,15 @@
 	:global(.tool-row button),
 	:global(.edge-actions button) {
 		border: 1px solid #3b4a44;
-		border-radius: 999px;
-		background: #13231d;
-		color: #bdf8dc;
-		padding: 0.45rem 0.65rem;
+		border-radius: var(--flow-radius, 0.375rem);
+		background: #1b222a;
+		color: #d5e2db;
+		min-height: 2rem;
+		padding: 0.3125rem 0.625rem;
+		line-height: 1.25rem;
 		font: inherit;
-		font-size: 0.72rem;
-		font-weight: 700;
+		font-size: var(--flow-label-font, 0.8125rem);
+		font-weight: 500;
 		cursor: pointer;
 	}
 	:global(.tool-row .add-node) {
@@ -316,7 +358,8 @@
 		display: grid;
 		gap: 0.75rem;
 		width: min(31rem, calc(100vw - 7rem));
-		max-height: min(35rem, calc(72vh - 7rem));
+		max-height: min(30rem, calc(100dvh - 15rem));
+		order: -1;
 		overflow: hidden;
 		padding-top: 0.6rem;
 		border-top: 1px solid #303944;
@@ -333,13 +376,12 @@
 	}
 	:global(.picker-heading strong) {
 		color: #f5f7f8;
-		font-size: 0.9rem;
+		font-size: var(--flow-control-font, 0.875rem);
 	}
 	:global(.picker-heading span),
-	:global(.canvas-help),
 	:global(.edge-actions > span) {
 		color: #8d98a3;
-		font-size: 0.7rem;
+		font-size: var(--flow-help-font, 0.75rem);
 	}
 	:global(.picker-heading > button) {
 		border: 0;
@@ -353,7 +395,7 @@
 		display: grid;
 		gap: 0.35rem;
 		color: #8d98a3;
-		font-size: 0.68rem;
+		font-size: var(--flow-help-font, 0.75rem);
 	}
 	:global(.catalogue-search input) {
 		width: 100%;
@@ -372,6 +414,7 @@
 		padding-right: 0.15rem;
 	}
 	:global(.catalogue-item) {
+		font: inherit;
 		display: grid;
 		gap: 0.45rem;
 		min-width: 0;
@@ -400,24 +443,24 @@
 	}
 	:global(.item-heading strong) {
 		color: #f5f7f8;
-		font-size: 0.82rem;
+		font-size: var(--flow-control-font, 0.875rem);
 	}
 	:global(.item-heading em) {
 		color: #6ee7b7;
-		font-size: 0.58rem;
+		font-size: 0.6875rem;
 		font-style: normal;
-		font-weight: 800;
+		font-weight: 600;
 		letter-spacing: 0.1em;
 		text-transform: uppercase;
 	}
 	:global(.catalogue-item > span:not(.item-heading)) {
 		color: #8d98a3;
-		font-size: 0.68rem;
+		font-size: var(--flow-help-font, 0.75rem);
 		line-height: 1.4;
 	}
 	:global(.catalogue-item small) {
-		color: #bdf8dc;
-		font-size: 0.62rem;
+		color: #d5e2db;
+		font-size: var(--flow-help-font, 0.75rem);
 	}
 	:global(.no-results) {
 		grid-column: 1 / -1;
@@ -427,12 +470,8 @@
 		font-size: 0.75rem;
 		text-align: center;
 	}
-	:global(.canvas-help) {
-		max-width: 17rem;
-		padding: 0.65rem 0.8rem;
-		line-height: 1.4;
-	}
 	:global(.edge-actions) {
+		bottom: 4.5rem;
 		display: flex;
 		align-items: center;
 		gap: 0.7rem;
@@ -444,11 +483,110 @@
 		color: #ffc5cc;
 	}
 	@media (max-width: 700px) {
+		:global(.svelte-flow__minimap) {
+			display: none;
+		}
 		:global(.catalogue-results) {
 			grid-template-columns: 1fr;
 		}
-		:global(.canvas-help) {
+	}
+
+	:global(.tool-row button:hover:not(:disabled)) {
+		border-color: #77968a;
+	}
+	:global(.tool-row button:focus-visible),
+	:global(.catalogue-search input:focus-visible),
+	:global(.picker-heading > button:focus-visible) {
+		outline: 2px solid #6ee7b7;
+		outline-offset: 2px;
+	}
+	@media (pointer: coarse) {
+		:global(.tool-row button) {
+			min-height: 2.75rem;
+		}
+	}
+
+	.canvas-help {
+		margin: 0.5rem 0 0;
+		color: #a4adb7;
+		font-size: var(--flow-help-font, 0.75rem);
+		line-height: 1.5;
+	}
+
+	.canvas.fullscreen {
+		height: 100%;
+		min-height: 0;
+		border: 0;
+		border-radius: 0;
+	}
+	:global(.editor-tools) {
+		max-width: calc(100% - 9rem);
+		margin-bottom: 1rem;
+	}
+	:global(.node-picker) {
+		width: min(31rem, 100%);
+	}
+	:global(.tool-row) {
+		flex-wrap: nowrap;
+	}
+	:global(.tool-row button) {
+		white-space: nowrap;
+	}
+	@media (max-width: 800px) {
+		:global(.svelte-flow__minimap) {
 			display: none;
+		}
+		:global(.editor-tools) {
+			max-width: calc(100% - 4.5rem);
+			width: max-content;
+			margin-left: 1.25rem;
+			margin-bottom: 0.5rem;
+		}
+		:global(.tool-row) {
+			flex-wrap: wrap;
+			gap: 0.25rem;
+		}
+		:global(.tool-row button) {
+			padding: 0.3125rem 0.5rem;
+			font-size: 0.75rem;
+		}
+		:global(.node-picker) {
+			width: min(31rem, calc(100vw - 6rem));
+			max-height: calc(100dvh - 17rem);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		:global(.svelte-flow *) {
+			animation: none !important;
+			transition: none !important;
+		}
+	}
+
+	.canvas.fullscreen :global(.svelte-flow__background) {
+		z-index: 0;
+	}
+	.canvas.fullscreen :global(.svelte-flow) {
+		z-index: auto;
+	}
+	:global(.editor-tools) {
+		z-index: 20;
+	}
+	:global(.node-picker) {
+		animation: picker-reveal 160ms ease-out;
+	}
+	@keyframes picker-reveal {
+		from {
+			opacity: 0;
+			transform: translateY(0.375rem);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		:global(.node-picker) {
+			animation: none;
 		}
 	}
 </style>

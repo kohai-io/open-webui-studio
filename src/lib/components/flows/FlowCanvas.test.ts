@@ -31,7 +31,7 @@ describe('FlowCanvas', () => {
 		expect(body).toContain('data-testid="svelte-flow__controls"');
 		expect(body).toContain('svelte-flow__background');
 		expect(body).toContain('svelte-flow__minimap');
-		expect(body).toContain('Next after model');
+		expect(body).toContain('Add node');
 		expect(body).toContain('Auto layout');
 		expect(body).toContain('Undo');
 		expect(body).toContain('Redo');

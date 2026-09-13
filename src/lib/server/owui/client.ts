@@ -1,5 +1,6 @@
 import { isFlowImages, type FlowImages, type FlowImageNodeV1 } from '$lib/flows/types';
 import { randomUUID } from 'node:crypto';
+import type { ImageCapabilities, ImageCapabilityState } from '$lib/flows/capabilities';
 import { normaliseEpochMilliseconds } from '$lib/server/time';
 import type {
 	OwuiChat,
@@ -95,6 +96,52 @@ export class OwuiClient {
 	async getCurrentUser(): Promise<StudioUser> {
 		const { payload, requestId } = await this.request('api/v1/auths/');
 		return this.user(object(payload, requestId), requestId);
+	}
+
+	async getImageCapabilities(): Promise<ImageCapabilities> {
+		const unknown: ImageCapabilities = {
+			generate: 'unavailable',
+			edit: 'unavailable',
+			canManage: false
+		};
+		try {
+			const user = await this.getCurrentUser();
+			const state = (value: unknown): ImageCapabilityState =>
+				value === true ? 'enabled' : value === false ? 'disabled' : 'unknown';
+			if (user.role === 'admin') {
+				// The upstream admin response includes credentials. Return only these flags.
+				const { payload, requestId } = await this.request('api/v1/images/config');
+				const config = object(payload, requestId);
+				return {
+					generate: state(config.ENABLE_IMAGE_GENERATION),
+					edit: state(config.ENABLE_IMAGE_EDIT),
+					canManage: true
+				};
+			}
+			const [config, permissions] = await Promise.all([
+				this.request('api/config'),
+				this.request('api/v1/users/permissions')
+			]);
+			const features = this.optionalObject(object(config.payload, config.requestId).features);
+			const allowed = this.optionalObject(
+				object(permissions.payload, permissions.requestId).features
+			)?.image_generation;
+			return {
+				generate:
+					features?.enable_image_generation === false
+						? 'disabled'
+						: allowed === false
+							? 'permission_denied'
+							: allowed === true
+								? state(features?.enable_image_generation)
+								: 'unknown',
+				// v0.10.2 exposes the edit toggle only to administrators.
+				edit: allowed === false ? 'permission_denied' : 'unknown',
+				canManage: false
+			};
+		} catch {
+			return unknown;
+		}
 	}
 
 	async listModels(signal?: AbortSignal): Promise<OwuiModel[]> {
@@ -402,8 +449,9 @@ export class OwuiClient {
 	async createImages(
 		input: FlowImageNodeV1['config'] & { fileIds: string[]; ownerId: string; signal?: AbortSignal }
 	): Promise<FlowImages> {
-		if (!input.prompt.trim() || input.prompt.length > 32768)
-			throw new TypeError('Enter an image prompt');
+		if (!input.prompt.trim())
+			throw new OwuiError('image_prompt_required', 400, this.nextRequestId());
+		if (input.prompt.length > 32768) throw new TypeError('Enter an image prompt');
 		if (input.operation !== 'generate' && input.operation !== 'edit')
 			throw new TypeError('Invalid image operation');
 		if (input.size && !['1024x1024', '1536x1024', '1024x1536'].includes(input.size))
@@ -425,7 +473,11 @@ export class OwuiClient {
 					...(input.operation === 'edit' ? { image: input.fileIds } : {})
 				}
 			}
-		);
+		).catch((error: unknown) => {
+			if (error instanceof OwuiError && error.code === 'permission_denied')
+				throw new OwuiError('image_access_denied', error.status, error.requestId);
+			throw error;
+		});
 		const fileIds = array(payload, requestId).map((entry) => {
 			const path = string(object(entry, requestId).url, requestId);
 			const match = /^\/api\/v1\/files\/([A-Za-z0-9_-]{1,128})\/content$/.exec(path);
