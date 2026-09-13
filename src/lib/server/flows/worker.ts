@@ -1,3 +1,4 @@
+import { isFlowImages, type FlowImages, type FlowImageNodeV1 } from '$lib/flows/types';
 import type { FlowCredentialLeaseStore } from './credential-leases';
 import {
 	FlowExecutionError,
@@ -15,6 +16,10 @@ const DEFAULT_NODE_TIMEOUT_MS = 2 * 60 * 1000;
 
 export interface FlowCompletionClient {
 	completeText(input: OwuiTextCompletionRequest): Promise<OwuiTextCompletion>;
+	resolveImages?(fileIds: string[], ownerId: string, signal?: AbortSignal): Promise<FlowImages>;
+	createImages?(
+		input: FlowImageNodeV1['config'] & { fileIds: string[]; ownerId: string; signal?: AbortSignal }
+	): Promise<FlowImages>;
 }
 
 export interface FlowWorkerOptions {
@@ -25,6 +30,7 @@ export interface FlowWorkerOptions {
 	heartbeatIntervalMs?: number;
 	runTimeoutMs?: number;
 	nodeTimeoutMs?: number;
+	imageNodeTimeoutMs?: number;
 }
 
 export type FlowWorkerRunResult =
@@ -57,6 +63,7 @@ export class FlowWorker {
 	private readonly heartbeatIntervalMs: number;
 	private readonly runTimeoutMs: number;
 	private readonly nodeTimeoutMs: number;
+	private readonly imageNodeTimeoutMs: number;
 
 	constructor(private readonly options: FlowWorkerOptions) {
 		if (!options.workerId || options.workerId.length > 128) throw new Error('workerId is required');
@@ -67,6 +74,10 @@ export class FlowWorker {
 		this.runTimeoutMs = positiveInteger(
 			options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
 			'runTimeoutMs'
+		);
+		this.imageNodeTimeoutMs = positiveInteger(
+			options.imageNodeTimeoutMs ?? 5 * 60 * 1000,
+			'imageNodeTimeoutMs'
 		);
 		this.nodeTimeoutMs = positiveInteger(
 			options.nodeTimeoutMs ?? DEFAULT_NODE_TIMEOUT_MS,
@@ -175,7 +186,7 @@ export class FlowWorker {
 			const nodeController = new AbortController();
 			const nodeTimer = setTimeout(
 				() => nodeController.abort(new WorkerAbort('timeout')),
-				this.nodeTimeoutMs
+				node.type === 'image' ? this.imageNodeTimeoutMs : this.nodeTimeoutMs
 			);
 			try {
 				const signal = AbortSignal.any([runSignal, nodeController.signal]);
@@ -202,7 +213,38 @@ export class FlowWorker {
 		signal: AbortSignal
 	): Promise<unknown> {
 		throwIfAborted(signal);
-		if (node.type === 'input') return claim.inputs[node.config.key];
+		if (node.type === 'input') {
+			const value = claim.inputs[node.config.key];
+			if (!isFlowImages(value)) return value;
+			const credential = this.options.credentialLeases.acquire(claim.ownerOwuiUserId, claim.id);
+			if (!credential) throw new WorkerFailure('authentication_required');
+			const client = this.options.clientForToken(credential.owuiToken);
+			if (!client.resolveImages) throw new WorkerFailure('validation_failed');
+			return abortable(client.resolveImages(value.fileIds, claim.ownerOwuiUserId, signal), signal);
+		}
+		if (node.type === 'image') {
+			const credential = this.options.credentialLeases.acquire(claim.ownerOwuiUserId, claim.id);
+			if (!credential) throw new WorkerFailure('authentication_required');
+			const client = this.options.clientForToken(credential.owuiToken);
+			if (!client.createImages) throw new WorkerFailure('validation_failed');
+			const fileIds = [
+				...new Set(
+					incomingValues(claim.definition, node.id, outputs)
+						.filter(isFlowImages)
+						.flatMap((value) => value.fileIds)
+				)
+			];
+			return abortable(
+				client.createImages({
+					...node.config,
+					prompt: renderTemplate(node.config.prompt, outputs),
+					fileIds,
+					ownerId: claim.ownerOwuiUserId,
+					signal
+				}),
+				signal
+			);
+		}
 		if (node.type === 'model') {
 			const credential = this.options.credentialLeases.acquire(claim.ownerOwuiUserId, claim.id);
 			if (!credential) throw new WorkerFailure('authentication_required');
@@ -272,7 +314,11 @@ function extract(value: unknown, path: string): unknown {
 	return current;
 }
 
-function formatOutput(format: 'text' | 'json', value: unknown): unknown {
+function formatOutput(format: 'text' | 'json' | 'images', value: unknown): unknown {
+	if (format === 'images') {
+		if (!isFlowImages(value)) throw new WorkerFailure('validation_failed');
+		return value;
+	}
 	if (format === 'text') return typeof value === 'string' ? value : JSON.stringify(value);
 	if (typeof value !== 'string') return value;
 	try {
@@ -301,7 +347,10 @@ function renderTemplate(template: string, outputs: Map<string, unknown>): string
 function workerErrorCode(error: unknown): WorkerFailureCode {
 	if (abortReason(error) === 'timeout') return 'timeout';
 	if (error instanceof WorkerFailure) return error.code;
+	if (error instanceof TypeError) return 'validation_failed';
 	if (error instanceof OwuiError) {
+		if (error.code === 'image_prompt_required' || error.code === 'image_access_denied')
+			return error.code;
 		if (error.code === 'authentication_required') return 'authentication_required';
 		if (error.code === 'permission_denied' || error.code === 'not_found')
 			return 'dependency_not_found';

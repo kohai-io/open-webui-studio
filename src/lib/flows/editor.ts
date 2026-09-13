@@ -1,3 +1,4 @@
+import { imageConnectionError } from './types';
 import type { FlowDefinitionV1, FlowEdgeV1, FlowNodeV1, FlowPositionV1 } from './types';
 
 export type AdmittedFlowNodeType = FlowNodeV1['type'];
@@ -143,6 +144,8 @@ export function flowConnectionError(
 	const source = definition.nodes.find((node) => node.id === connection.source);
 	const target = definition.nodes.find((node) => node.id === connection.target);
 	if (!source || !target) return 'That node is no longer available.';
+	const mediaError = imageConnectionError(source, target);
+	if (mediaError) return mediaError;
 	if (source.id === target.id) return 'A node cannot connect to itself.';
 	if (source.type === 'output') return 'Output nodes cannot start a connection.';
 	if (target.type === 'input') return 'Input nodes cannot receive a connection.';
@@ -186,6 +189,14 @@ export function flowEditorIssues(definition: FlowDefinitionV1): string[] {
 		)
 			issues.push(`${node.id} accepts one incoming connection.`);
 	}
+	for (const edge of definition.edges) {
+		const source = definition.nodes.find((n) => n.id === edge.source),
+			target = definition.nodes.find((n) => n.id === edge.target);
+		if (source && target) {
+			const error = imageConnectionError(source, target);
+			if (error) issues.push(error);
+		}
+	}
 	if (containsCycle(definition)) issues.push('Remove the cycle before saving.');
 	return [...new Set(issues)];
 }
@@ -205,6 +216,20 @@ function defaultNode(
 		let key = 'request';
 		while (usedKeys.has(key)) key = `input${++suffix}`;
 		return { id, type, position, config: { key } };
+	}
+	if (type === 'image') {
+		const input = definition.nodes.find(
+			(node) => node.type === 'input' && node.config.kind !== 'images'
+		);
+		return {
+			id,
+			type,
+			position,
+			config: {
+				operation: 'generate',
+				prompt: input ? `{{node.${input.id}.output}}` : 'Describe the image to create.'
+			}
+		};
 	}
 	if (type === 'model') {
 		const input = definition.nodes.find((node) => node.type === 'input');

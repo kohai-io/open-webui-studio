@@ -66,7 +66,8 @@ export function getServices() {
 		clientForToken: (token) => new OwuiClient({ baseUrl: owuiBaseUrl, token }),
 		heartbeatIntervalMs,
 		runTimeoutMs: positiveIntegerEnv('FLOW_RUN_TIMEOUT_MS', 10 * 60 * 1000),
-		nodeTimeoutMs: positiveIntegerEnv('FLOW_NODE_TIMEOUT_MS', 2 * 60 * 1000)
+		nodeTimeoutMs: positiveIntegerEnv('FLOW_NODE_TIMEOUT_MS', 2 * 60 * 1000),
+		imageNodeTimeoutMs: positiveIntegerEnv('FLOW_IMAGE_NODE_TIMEOUT_MS', 5 * 60 * 1000)
 	});
 	const flowRunner = new FlowWorkerRunner({
 		worker: flowWorker,

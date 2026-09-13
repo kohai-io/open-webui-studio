@@ -74,20 +74,82 @@
 			/></label
 		>
 		<label
-			>Default value<textarea
-				value={node.config.defaultValue ?? ''}
-				rows="5"
-				maxlength="16384"
-				oninput={(event) => {
-					const value = inputValue(event);
+			>Input type<select
+				value={node.config.kind ?? 'text'}
+				onchange={(event) =>
 					onupdate({
 						...node,
 						config: {
 							key: node.config.key,
-							...(value === '' ? {} : { defaultValue: value })
+							kind: inputValue(event) === 'images' ? 'images' : 'text'
 						}
-					});
-				}}></textarea></label
+					})}
+				><option value="text">Text</option><option value="images">Images or sketch</option></select
+			></label
+		>
+		{#if node.config.kind !== 'images'}
+			<label
+				>Default value<textarea
+					value={node.config.defaultValue ?? ''}
+					rows="5"
+					maxlength="16384"
+					oninput={(event) => {
+						const value = inputValue(event);
+						onupdate({
+							...node,
+							config: {
+								key: node.config.key,
+								...(value === '' ? {} : { defaultValue: value })
+							}
+						});
+					}}></textarea></label
+			>
+		{/if}
+	{:else if node.type === 'image'}
+		<label
+			>Operation<select
+				value={node.config.operation}
+				onchange={(event) =>
+					onupdate({
+						...node,
+						config: {
+							...node.config,
+							operation: inputValue(event) === 'edit' ? 'edit' : 'generate'
+						}
+					})}
+				><option value="generate">Generate image</option><option value="edit"
+					>Edit reference images</option
+				></select
+			></label
+		>
+		<label
+			>Prompt template<textarea
+				value={node.config.prompt}
+				rows="7"
+				maxlength="32768"
+				oninput={(event) =>
+					onupdate({ ...node, config: { ...node.config, prompt: inputValue(event) } })}
+			></textarea><small
+				>Reference a text input or Model output with <code>{'{{node.<id>.output}}'}</code>.</small
+			></label
+		>
+		<label
+			>Image size<select
+				value={node.config.size ?? ''}
+				onchange={(event) => {
+					const size = inputValue(event) as '1024x1024' | '1536x1024' | '1024x1536' | '';
+					onupdate({ ...node, config: { ...node.config, size: size || undefined } });
+				}}
+				><option value="">Open WebUI default</option><option value="1024x1024"
+					>Square - 1024 - 1024</option
+				><option value="1536x1024">Landscape - 1536 - 1024</option><option value="1024x1536"
+					>Portrait - 1024 - 1536</option
+				></select
+			></label
+		>
+		<small
+			>Uses the image model configured in Open WebUI. Supported sizes depend on that model. For
+			editing, connect an Images input or a previous Image node.</small
 		>
 	{:else if node.type === 'model'}
 		<label
@@ -207,12 +269,14 @@
 			>Output format<select
 				value={node.config.format}
 				onchange={(event) => {
-					const format = inputValue(event) === 'json' ? 'json' : 'text';
+					const value = inputValue(event);
+					const format = value === 'images' ? 'images' : value === 'json' ? 'json' : 'text';
 					onupdate({ ...node, config: { format } });
 				}}
 			>
 				<option value="text">Text</option>
 				<option value="json">JSON</option>
+				<option value="images">Images</option>
 			</select></label
 		>
 	{/if}
@@ -231,7 +295,7 @@
 		overflow-y: auto;
 		padding: 1rem;
 		border: 1px solid #34413c;
-		border-radius: 0.9rem;
+		border-radius: 0.75rem;
 		background: rgba(11, 15, 19, 0.97);
 		box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.45);
 	}
@@ -244,20 +308,27 @@
 	header p {
 		margin: 0;
 		color: #6ee7b7;
-		font-size: 0.65rem;
-		font-weight: 800;
-		letter-spacing: 0.14em;
-		text-transform: uppercase;
+		font-size: var(--flow-help-font, 0.75rem);
+		font-weight: 600;
+		line-height: 1.5;
 	}
 	h3 {
 		margin: 0.3rem 0 0.35rem;
 		text-transform: capitalize;
+		font-size: 1rem;
+		font-weight: 600;
+		line-height: 1.5;
 	}
 	header code {
 		color: #8d98a3;
-		font-size: 0.72rem;
+		font-size: var(--flow-help-font, 0.75rem);
 	}
 	.close {
+		display: grid;
+		place-items: center;
+		width: var(--flow-control-height, 2.25rem);
+		height: var(--flow-control-height, 2.25rem);
+		border-radius: var(--flow-radius, 0.375rem);
 		border: 0;
 		background: transparent;
 		color: #aeb6bf;
@@ -268,18 +339,21 @@
 		display: grid;
 		gap: 0.4rem;
 		color: #c7ced5;
-		font-size: 0.8rem;
+		font-size: var(--flow-label-font, 0.8125rem);
 	}
 	input,
 	textarea,
 	select {
 		width: 100%;
 		border: 1px solid #303944;
-		border-radius: 0.6rem;
+		border-radius: var(--flow-radius, 0.375rem);
 		background: #070a0d;
 		color: #f5f7f8;
-		padding: 0.65rem 0.72rem;
+		min-height: var(--flow-control-height, 2.25rem);
+		padding: 0.4375rem 0.625rem;
 		font: inherit;
+		font-size: var(--flow-control-font, 0.875rem);
+		line-height: 1.25rem;
 	}
 	textarea {
 		resize: vertical;
@@ -287,7 +361,8 @@
 	}
 	small {
 		color: #8d98a3;
-		line-height: 1.4;
+		font-size: var(--flow-help-font, 0.75rem);
+		line-height: 1.5;
 	}
 	.numbers {
 		display: grid;
@@ -295,17 +370,34 @@
 		gap: 0.7rem;
 	}
 	footer {
-		padding-top: 0.2rem;
+		padding-top: 1rem;
 		border-top: 1px solid #252d35;
 	}
 	.delete {
 		border: 1px solid #743b45;
-		border-radius: 999px;
+		border-radius: var(--flow-radius, 0.375rem);
 		background: #2b171b;
 		color: #ffc5cc;
-		padding: 0.6rem 0.8rem;
+		min-height: var(--flow-control-height, 2.25rem);
+		padding: 0.4375rem 0.75rem;
 		font: inherit;
-		font-weight: 700;
+		font-size: var(--flow-control-font, 0.875rem);
+		line-height: 1.25rem;
+		font-weight: 500;
 		cursor: pointer;
+	}
+
+	input:focus-visible,
+	textarea:focus-visible,
+	select:focus-visible,
+	button:focus-visible {
+		outline: 2px solid #6ee7b7;
+		outline-offset: 2px;
+	}
+	.close:hover {
+		background: #222d34;
+	}
+	.delete:hover {
+		background: #402129;
 	}
 </style>

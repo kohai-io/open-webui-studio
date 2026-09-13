@@ -59,3 +59,25 @@ The multi-stage Dockerfile builds on Node 22, installs production dependencies o
 - Never access the Open WebUI database, storage paths, or internal model classes.
 - Never expose provider tokens, Open WebUI JWTs, API keys, or administrator credentials to browser JavaScript or logs.
 - Resolve Open WebUI references through the typed, user-scoped server adapter and revalidate access at use time.
+
+## Image flows
+
+Open `/studio/flows` and choose **New image flow** or **New image edit flow**. Name the flow, enter a prompt in the expandable Run panel’s Inputs view, then choose **Save and run**. The current draft is saved first and that exact version is queued; failed saves never start a run. Image editing accepts up to eight PNG, JPEG or WebP references from Media, uploaded files (10 MB each), or the sketch tool. Use **Use sketch as reference** before running; the drawing surface is temporary, while its saved image remains in Open WebUI.
+
+The Image node uses Open WebUI's configured generation or editing model. Enable the corresponding image feature in Open WebUI and grant the user image-generation permission. Image size defaults to Open WebUI's setting; optional sizes still depend on the configured provider. An existing Model node can refine a text prompt before an Image node. To chain edits, connect the earlier Image node to an Image node configured for editing, then connect that node to an Output configured as Images.
+
+Images are stored as Open WebUI files. Studio records typed file references in encrypted execution inputs and checkpoints, revalidates ownership before use, and previews results through its existing Media endpoint. Run history restores the prompt and image references; retries are explicit new runs. Image mutations are never automatically retried. Cancellation stops Studio waiting for the request, but cannot guarantee that the upstream provider stops work already accepted.
+
+Set `BODY_SIZE_LIMIT=12M` when running the Node adapter to allow multipart uploads (included in the Docker image). `FLOW_IMAGE_NODE_TIMEOUT_MS` defaults to 300000; the existing overall run deadline still applies. The image HTTP request is also capped at five minutes.
+
+This first version supports separate image references and freehand sketches. It does not composite layers, create masks, or enable agent/function execution. Existing text flows keep their format and behavior.
+
+Run `npm run test:e2e:images` for the authenticated browser checks. They use an isolated test database and local mock Open WebUI provider, with no real model calls or credentials. The usual `npm run test:integration`, `npm run check` and `npm run lint` cover the shared implementation.
+
+### Flow workspace
+
+The canvas fills the window and can be panned and zoomed. The floating top bar opens the Flows library, Flow details and Run panel; the bottom toolbar adds and arranges nodes. Panels expand over the canvas without resizing it. On phones, only one side panel opens at a time. The Run panel contains Inputs, Results, History and Node views; selecting a node opens its settings. Disclosure buttons expose their expanded state, hidden panels are removed from keyboard navigation, and Escape closes a panel and returns focus to its control. Keyboard users can focus a node and press Enter to open its settings. Panel and menu animations respect reduced-motion preferences. Saved and unsaved states are shown beside the run controls.
+
+Image availability is checked on page load and again before running. Disabled features, missing user permissions and an unreachable Open WebUI service are shown before execution is queued. Administrators can open image settings and use **Check again** after configuring the provider. Checks report whether features are enabled; they do not send a paid provider request. Open WebUI v0.10.2 does not expose its edit toggle to ordinary users, so Studio reports that check as unknown and lets Open WebUI enforce access at execution time. Administrator configuration is read only on the server; only feature flags reach the browser.
+
+Results offer a full-size preview, Download, **Use as reference** and **Add edit step**. Use as reference starts a new edit draft using the existing output file, avoiding a repeat generation call. Add edit step extends the current graph; a new run executes earlier steps again. Image edits display the reference images with the output. History restores the original inputs and identifies the executed flow version. Empty text boxes use their saved Input default when one is available.

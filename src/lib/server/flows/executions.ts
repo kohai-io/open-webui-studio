@@ -1,3 +1,4 @@
+import { isFlowImages, type FlowInputValue } from '$lib/flows/types';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { StudioDatabase } from '$lib/server/database/database';
 import { decryptJson, encryptJson } from '$lib/server/sessions/crypto';
@@ -16,6 +17,8 @@ export type FlowExecutionState =
 export type FlowNodeState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export type FlowExecutionErrorCode =
+	| 'image_prompt_required'
+	| 'image_access_denied'
 	| 'validation_failed'
 	| 'not_found'
 	| 'conflict'
@@ -70,7 +73,7 @@ export interface FlowExecutionNodeRecord {
 }
 
 export interface FlowExecutionRecord extends FlowExecutionSummary {
-	inputs: Record<string, string>;
+	inputs: Record<string, FlowInputValue>;
 	output?: unknown;
 	nodes: FlowExecutionNodeRecord[];
 }
@@ -836,7 +839,7 @@ export class FlowExecutionStore {
 			.all(row.id) as NodeRow[];
 		return {
 			...summary(row),
-			inputs: decryptJson<Record<string, string>>(
+			inputs: decryptJson<Record<string, FlowInputValue>>(
 				row.encrypted_input,
 				this.options.encryptionKey,
 				inputAad(row.owner_owui_user_id, row.id)
@@ -922,16 +925,28 @@ export class FlowExecutionStore {
 	}
 }
 
-function runtimeInputs(value: unknown, definition: FlowDefinitionV1): Record<string, string> {
+function runtimeInputs(
+	value: unknown,
+	definition: FlowDefinitionV1
+): Record<string, FlowInputValue> {
 	if (!isRecord(value)) throw new FlowExecutionError('validation_failed', '$.inputs');
 	const inputNodes = definition.nodes.filter((node) => node.type === 'input');
 	const allowed = new Map(inputNodes.map((node) => [node.config.key, node]));
 	for (const key of Object.keys(value))
 		if (!allowed.has(key)) throw new FlowExecutionError('validation_failed', `$.inputs.${key}`);
-	const result: Record<string, string> = {};
+	const result: Record<string, FlowInputValue> = {};
 	for (const node of inputNodes) {
 		const supplied = value[node.config.key];
-		const resolved = supplied ?? node.config.defaultValue;
+		const resolved =
+			supplied === ''
+				? (node.config.defaultValue ?? supplied)
+				: (supplied ?? node.config.defaultValue);
+		if (node.config.kind === 'images') {
+			if (!isFlowImages(resolved))
+				throw new FlowExecutionError('validation_failed', `$.inputs.${node.config.key}`);
+			result[node.config.key] = { kind: 'images', fileIds: [...resolved.fileIds] };
+			continue;
+		}
 		if (typeof resolved !== 'string')
 			throw new FlowExecutionError('validation_failed', `$.inputs.${node.config.key}`);
 		if (Buffer.byteLength(resolved, 'utf8') > 16 * 1024)
@@ -1058,6 +1073,8 @@ function hashClaim(token: string): string {
 
 function stableExecutionError(value: string): string {
 	const allowed = new Set([
+		'image_prompt_required',
+		'image_access_denied',
 		'validation_failed',
 		'authentication_required',
 		'dependency_not_found',
