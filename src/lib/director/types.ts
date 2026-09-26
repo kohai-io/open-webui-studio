@@ -5,6 +5,13 @@ export interface Reference {
 	description: string;
 	fileId: string;
 }
+export interface FrameCrop {
+	sourceFileId: string;
+	ratio: '16:9' | '9:16' | '1:1';
+	x: number;
+	y: number;
+	zoom: number;
+}
 export interface Shot {
 	id: string;
 	title: string;
@@ -17,6 +24,7 @@ export interface Shot {
 	duration: number;
 	referenceIds: string[];
 	firstFrame: string;
+	firstFrameCrop?: FrameCrop;
 	lastFrame: string;
 	framePrompt: string;
 	videoPrompt: string;
@@ -65,6 +73,9 @@ export interface Job {
 	createdAt: number;
 	updatedAt: number;
 	input: JobInput;
+	lastStatusAt?: number;
+	/** Display number within this shot/reference and operation, across the full job history. */
+	reviewNumber?: number;
 	snapshot: ProjectDocument;
 	prompt: string;
 	instructionVersion: string;

@@ -1,7 +1,8 @@
 import { base } from '$app/paths';
-export async function api(path: string, body?: unknown, key?: string) {
+export async function api(path: string, body?: unknown, key?: string, signal?: AbortSignal) {
 	const response = await fetch(`${base}/api/director${path}`, {
 		method: body === undefined ? 'GET' : 'POST',
+		signal,
 		headers: { 'content-type': 'application/json', ...(key ? { 'idempotency-key': key } : {}) },
 		...(body === undefined ? {} : { body: JSON.stringify(body) })
 	});
@@ -12,6 +13,12 @@ export async function api(path: string, body?: unknown, key?: string) {
 export function message(error: unknown): string {
 	const code = error instanceof Error ? error.message : 'request_failed';
 	const messages: Record<string, string> = {
+		frame_crop_ratio_changed:
+			'The production ratio changed. Prepare a new video crop before generating.',
+		generation_in_progress:
+			'This generation is already active or needs checking. Review the existing job in Takes before starting another.',
+		status_unavailable:
+			'The provider status could not be checked. Studio will check the same task again; it will not submit another generation.',
 		revision_conflict:
 			'This project changed in another tab. Reload to review those changes before saving.',
 		proposal_outdated:

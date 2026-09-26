@@ -1,5 +1,9 @@
 # Studio Director
 
+See [the take review workspace](director-review-workspace.md) for result selection, comparison and review notes.
+
+See [generation controls and frame preparation](director-generation-controls.md) for duplicate protection, job progress and the video crop workflow.
+
 Director adds a production workspace at `/studio/director`: project briefs, character and location references, storyboard editing, scoped Assistant proposals, image generation/editing, Seedance video jobs, take comparison, human review notes, sequence preview and ZIP export.
 
 Follow the [stage test guide](director-stage-test.md) for a first production. The [interaction history and audit plan](director-audit-plan.md) is deferred work; the current release does not save a complete per-user interaction transcript in Open WebUI.

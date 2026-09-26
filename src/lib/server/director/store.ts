@@ -12,6 +12,7 @@ import {
 	type JobState
 } from '$lib/director/types';
 import { INSTRUCTION_VERSION, jobPrompt } from './instructions';
+import { sameGeneration } from '$lib/director/jobs';
 type ProjectRow = {
 	id: string;
 	revision: number;
@@ -39,6 +40,14 @@ export interface ClaimedJob {
 	claimToken: string;
 }
 export class DirectorStore {
+	private reviewIndexes = new Map<
+		string,
+		{
+			lastRow: number;
+			numbers: Map<string, number>;
+			counts: Map<string, number>;
+		}
+	>();
 	constructor(
 		readonly db: StudioDatabase,
 		private key: Buffer,
@@ -133,12 +142,56 @@ export class DirectorStore {
 				.all(projectId, owner) as JobRow[]
 		).map((row) => this.job(row));
 		const ids = new Set(recent.map((j) => j.id));
+		// Unresolved requests must stay visible even after falling outside recent history.
+		const pending = this.db
+			.prepare(
+				"SELECT * FROM studio_director_job WHERE project_id=? AND owner_id=? AND state NOT IN ('succeeded','failed','cancelled')"
+			)
+			.all(projectId, owner) as JobRow[];
+		for (const row of pending)
+			if (!ids.has(row.id)) {
+				recent.push(this.job(row));
+				ids.add(row.id);
+			}
 		for (const shot of project.shots)
 			if (shot.acceptedTakeId && !ids.has(shot.acceptedTakeId)) {
 				recent.push(this.getJob(owner, projectId, shot.acceptedTakeId));
 				ids.add(shot.acceptedTakeId);
 			}
-		return recent;
+		const numbers = this.reviewNumbers(owner, projectId);
+		return recent.map((job) => ({ ...job, reviewNumber: numbers.get(job.id) }));
+	}
+	private reviewNumbers(owner: string, projectId: string): Map<string, number> {
+		const key = JSON.stringify([owner, projectId]);
+		let index = this.reviewIndexes.get(key);
+		if (!index) {
+			index = { lastRow: 0, numbers: new Map(), counts: new Map() };
+			if (this.reviewIndexes.size >= 32)
+				this.reviewIndexes.delete(this.reviewIndexes.keys().next().value!);
+			this.reviewIndexes.set(key, index);
+		}
+		// Jobs are append-only. Read new inputs once, not whole snapshots on every status poll.
+		const rows = this.db
+			.prepare(
+				'SELECT rowid AS sequence, id, encrypted_payload FROM studio_director_job WHERE owner_id=? AND project_id=? AND rowid>? ORDER BY rowid'
+			)
+			.all(owner, projectId, index.lastRow) as {
+			sequence: number;
+			id: string;
+			encrypted_payload: string;
+		}[];
+		for (const row of rows) {
+			const input = decryptJson<Job>(row.encrypted_payload, this.key).input;
+			const group = JSON.stringify([
+				input.kind,
+				input.kind === 'reference' ? input.referenceId : input.shotId
+			]);
+			const number = (index.counts.get(group) ?? 0) + 1;
+			index.counts.set(group, number);
+			index.numbers.set(row.id, number);
+			index.lastRow = row.sequence;
+		}
+		return index.numbers;
 	}
 	getJob(owner: string, projectId: string, id: string): Job {
 		const row = this.db
@@ -176,70 +229,89 @@ export class DirectorStore {
 		identifier(input.shotId, true);
 		identifier(input.referenceId, true);
 		const hash = createHash('sha256').update(JSON.stringify({ projectId, input })).digest('hex');
-		return this.db.transaction(() => {
-			const existing = this.db
-				.prepare('SELECT * FROM studio_director_job WHERE owner_id=? AND idempotency_key=?')
-				.get(owner, idempotencyKey) as JobRow | undefined;
-			if (existing) {
-				if (existing.input_hash !== hash) throw new DirectorError('idempotency_conflict', 409);
-				return this.job(existing);
-			}
-			const project = this.get(owner, projectId);
-			if (project.archived) throw new DirectorError('project_archived', 409);
-			if (project.revision !== input.projectRevision)
-				throw new DirectorError('revision_conflict', 409);
-			if (expiresAt <= this.now()) throw new DirectorError('authentication_required', 401);
-			const count = this.db
-				.prepare(
-					"SELECT count(*) AS n FROM studio_director_job WHERE owner_id=? AND state IN ('queued','submitting','running')"
+		return this.db
+			.transaction(() => {
+				const existing = this.db
+					.prepare('SELECT * FROM studio_director_job WHERE owner_id=? AND idempotency_key=?')
+					.get(owner, idempotencyKey) as JobRow | undefined;
+				if (existing) {
+					if (existing.input_hash !== hash) throw new DirectorError('idempotency_conflict', 409);
+					return this.job(existing);
+				}
+				const project = this.get(owner, projectId);
+				if (project.archived) throw new DirectorError('project_archived', 409);
+				if (project.revision !== input.projectRevision)
+					throw new DirectorError('revision_conflict', 409);
+				if (expiresAt <= this.now()) throw new DirectorError('authentication_required', 401);
+				const pending = this.db
+					.prepare(
+						"SELECT * FROM studio_director_job WHERE owner_id=? AND project_id=? AND state NOT IN ('succeeded','failed','cancelled')"
+					)
+					.all(owner, projectId) as JobRow[];
+				if (pending.some((row) => sameGeneration(this.job(row).input, input)))
+					throw new DirectorError('generation_in_progress', 409);
+				const count = this.db
+					.prepare(
+						"SELECT count(*) AS n FROM studio_director_job WHERE owner_id=? AND state IN ('queued','submitting','running')"
+					)
+					.get(owner) as { n: number };
+				if (count.n >= 20) throw new DirectorError('queue_full', 429);
+				if (
+					['revise', 'first-frame', 'last-frame', 'video'].includes(input.kind) &&
+					!project.shots.some((s) => s.id === input.shotId)
 				)
-				.get(owner) as { n: number };
-			if (count.n >= 20) throw new DirectorError('queue_full', 429);
-			if (
-				['revise', 'first-frame', 'last-frame', 'video'].includes(input.kind) &&
-				!project.shots.some((s) => s.id === input.shotId)
-			)
-				throw new DirectorError('shot_required');
-			if (input.kind === 'reference' && !project.references.some((r) => r.id === input.referenceId))
-				throw new DirectorError('reference_required');
-			if (['storyboard', 'revise'].includes(input.kind) && !project.modelId)
-				throw new DirectorError('model_required');
-			if (input.kind === 'video' && !project.videoModelId)
-				throw new DirectorError('video_model_required');
-			const snapshot = validateDocument(project);
-			const id = randomUUID();
-			const now = this.now();
-			const job: Job = {
-				id,
-				projectId,
-				input,
-				snapshot,
-				prompt: jobPrompt(snapshot, input),
-				instructionVersion: INSTRUCTION_VERSION,
-				state: 'queued',
-				createdAt: now,
-				updatedAt: now
-			};
-			this.db
-				.prepare(
-					'INSERT INTO studio_director_job (id,project_id,owner_id,idempotency_key,input_hash,state,encrypted_payload,encrypted_credential,credential_expires_at,next_poll_at,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+					throw new DirectorError('shot_required');
+				if (
+					input.kind === 'reference' &&
+					!project.references.some((r) => r.id === input.referenceId)
 				)
-				.run(
+					throw new DirectorError('reference_required');
+				if (['storyboard', 'revise'].includes(input.kind) && !project.modelId)
+					throw new DirectorError('model_required');
+				if (input.kind === 'video' && !project.videoModelId)
+					throw new DirectorError('video_model_required');
+				const shot = project.shots.find((s) => s.id === input.shotId);
+				if (
+					input.kind === 'video' &&
+					shot?.firstFrameCrop &&
+					shot.firstFrameCrop.ratio !== project.ratio
+				)
+					throw new DirectorError('frame_crop_ratio_changed');
+				const snapshot = validateDocument(project);
+				const id = randomUUID();
+				const now = this.now();
+				const job: Job = {
 					id,
 					projectId,
-					owner,
-					idempotencyKey,
-					hash,
-					'queued',
-					encryptJson(job, this.key),
-					encryptJson({ token }, this.key),
-					expiresAt,
-					now,
-					now,
-					now
-				);
-			return job;
-		})();
+					input,
+					snapshot,
+					prompt: jobPrompt(snapshot, input),
+					instructionVersion: INSTRUCTION_VERSION,
+					state: 'queued',
+					createdAt: now,
+					updatedAt: now
+				};
+				this.db
+					.prepare(
+						'INSERT INTO studio_director_job (id,project_id,owner_id,idempotency_key,input_hash,state,encrypted_payload,encrypted_credential,credential_expires_at,next_poll_at,updated_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+					)
+					.run(
+						id,
+						projectId,
+						owner,
+						idempotencyKey,
+						hash,
+						'queued',
+						encryptJson(job, this.key),
+						encryptJson({ token }, this.key),
+						expiresAt,
+						now,
+						now,
+						now
+					);
+				return job;
+			})
+			.immediate();
 	}
 	claim(): ClaimedJob | null {
 		return this.db.transaction(() => {
@@ -363,8 +435,10 @@ export class DirectorStore {
 					const shot = project.shots.find((s) => s.id === job.input.shotId);
 					if (!shot) throw new DirectorError('shot_required');
 					if (job.input.kind === 'video') shot.acceptedTakeId = id;
-					else if (job.input.kind === 'first-frame') shot.firstFrame = fileId;
-					else if (job.input.kind === 'last-frame') shot.lastFrame = fileId;
+					else if (job.input.kind === 'first-frame') {
+						shot.firstFrame = fileId;
+						delete shot.firstFrameCrop;
+					} else if (job.input.kind === 'last-frame') shot.lastFrame = fileId;
 				}
 			}
 			return this.save(owner, projectId, revision, project);

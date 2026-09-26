@@ -262,6 +262,8 @@
 }
 .director .frame img,
 .director .frame video {
+	position: absolute;
+	inset: 0;
 	width: 100%;
 	height: 100%;
 	object-fit: contain;
@@ -287,25 +289,38 @@
 	display: grid;
 	gap: 16px;
 }
-.director .reference-grid,
-.director .takes-grid {
+.director .reference-grid {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
 	gap: 18px;
 }
-.director .take {
+.director .job-progress {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr);
-	overflow-wrap: anywhere;
-	gap: 12px;
+	gap: 6px;
 }
-.director .take img,
-.director .take video {
+.director .crop-editor {
+	padding: 16px 0;
+}
+.director .crop-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+	gap: 16px;
+	align-items: start;
+}
+.director .crop-source,
+.director .crop-preview {
 	width: 100%;
-	aspect-ratio: 16/9;
-	object-fit: contain;
+	height: auto;
+	display: block;
 	background: #080c0e;
 	border-radius: 6px;
+}
+.director .crop-source {
+	max-height: 180px;
+	object-fit: contain;
+}
+.director .crop-editor input[type='range'] {
+	padding: 0;
 }
 .director .sequence {
 	display: flex;

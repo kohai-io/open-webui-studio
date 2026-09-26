@@ -6,6 +6,8 @@ import { DirectorWorker, type DirectorClient } from './worker';
 import { emptyShot, type JobInput, type Project } from '$lib/director/types';
 import { isTakeStale } from '$lib/director/staleness';
 import { videoFailureMessage } from '$lib/director/video';
+import { validateDocument } from '$lib/director/validation';
+import { cropGeometry } from '$lib/director/crop';
 import { bytes, exportManifest, zip } from './export';
 let db: StudioDatabase;
 let store: DirectorStore;
@@ -70,6 +72,160 @@ beforeEach(() => {
 });
 afterEach(() => db.close());
 describe('Director production lifecycle', () => {
+	it('keeps per-operation review numbers across the recent-history limit and restart', () => {
+		const first = queue();
+		db.prepare("UPDATE studio_director_job SET state='succeeded' WHERE id=?").run(first.id);
+		project.shots[0].acceptedTakeId = first.id;
+		project = store.save('alice', project.id, project.revision, project);
+		expect(store.jobs('alice', project.id).find((j) => j.id === first.id)?.reviewNumber).toBe(1);
+		for (let i = 0; i < 301; i++) {
+			clock++;
+			const frame = queue('first-frame');
+			db.prepare("UPDATE studio_director_job SET state='failed' WHERE id=?").run(frame.id);
+		}
+		clock++;
+		const second = queue();
+		const jobs = store.jobs('alice', project.id);
+		expect(jobs.find((j) => j.id === first.id)?.reviewNumber).toBe(1);
+		expect(jobs.find((j) => j.id === second.id)?.reviewNumber).toBe(2);
+		expect(jobs.find((j) => j.input.kind === 'first-frame')?.reviewNumber).toBe(301);
+		expect(
+			new DirectorStore(db, key, () => clock)
+				.jobs('alice', project.id)
+				.map((j) => [j.id, j.reviewNumber])
+		).toEqual(jobs.map((j) => [j.id, j.reviewNumber]));
+		expect(() => store.jobs('bob', project.id)).toThrow('not_found');
+	});
+	it.each(['queued', 'submitting', 'running', 'submission-unknown', 'authentication-required'])(
+		'blocks a new request key for the same %s generation, including after edits',
+		(state) => {
+			const first = queue();
+			db.prepare('UPDATE studio_director_job SET state=? WHERE id=?').run(state, first.id);
+			project.shots[0].action = 'New direction in another tab';
+			project = store.save('alice', project.id, project.revision, project);
+			expect(() =>
+				new DirectorStore(db, key, () => clock).queue(
+					'alice',
+					project.id,
+					input(),
+					randomUUID(),
+					'token',
+					clock + 10000
+				)
+			).toThrow('generation_in_progress');
+			expect(store.jobs('alice', project.id)).toHaveLength(1);
+			// Other shots and different operations can proceed independently.
+			expect(
+				store.queue(
+					'alice',
+					project.id,
+					{ ...input(), shotId: 'shot-2' },
+					randomUUID(),
+					'token',
+					clock + 10000
+				).id
+			).not.toBe(first.id);
+			expect(queue('first-frame').id).not.toBe(first.id);
+		}
+	);
+	it.each(['succeeded', 'failed', 'cancelled'])('allows an explicit new take after %s', (state) => {
+		const first = queue();
+		db.prepare('UPDATE studio_director_job SET state=? WHERE id=?').run(state, first.id);
+		expect(queue().id).not.toBe(first.id);
+	});
+	it('scopes reference and storyboard guards to the right targets', () => {
+		project.references = ['a', 'b'].map((id) => ({
+			id,
+			name: id,
+			role: 'identity' as const,
+			description: '',
+			fileId: ''
+		}));
+		project = store.save('alice', project.id, project.revision, project);
+		const ref = (id: string) =>
+			store.queue(
+				'alice',
+				project.id,
+				{ ...input('reference'), referenceId: id },
+				randomUUID(),
+				'token',
+				clock + 10000
+			);
+		ref('a');
+		expect(() => ref('a')).toThrow('generation_in_progress');
+		expect(ref('b')).toBeDefined();
+		queue('storyboard');
+		expect(() =>
+			store.queue(
+				'alice',
+				project.id,
+				{ ...input('storyboard'), shotId: 'shot-2' },
+				randomUUID(),
+				'token',
+				clock + 10000
+			)
+		).toThrow('generation_in_progress');
+	});
+	it('preserves original crop metadata and rejects changed ratios and invalid positions', () => {
+		project.shots[0].firstFrame = 'cropped';
+		project.shots[0].firstFrameCrop = {
+			sourceFileId: 'original',
+			ratio: '16:9',
+			x: 25,
+			y: 75,
+			zoom: 1.5
+		};
+		project = store.save('alice', project.id, project.revision, project);
+		expect(store.get('alice', project.id).shots[0].firstFrameCrop).toEqual(
+			project.shots[0].firstFrameCrop
+		);
+		project.ratio = '9:16';
+		project = store.save('alice', project.id, project.revision, project);
+		expect(() => queue()).toThrow('frame_crop_ratio_changed');
+		project.shots[0].firstFrameCrop!.x = 101;
+		expect(() => validateDocument(project)).toThrow('invalid_frame_crop');
+	});
+	it('clears old crop metadata when accepting a newly generated first frame', async () => {
+		project.shots[0].firstFrame = 'old-crop';
+		project.shots[0].firstFrameCrop = {
+			sourceFileId: 'old-original',
+			ratio: '16:9',
+			x: 50,
+			y: 50,
+			zoom: 1
+		};
+		project = store.save('alice', project.id, project.revision, project);
+		const job = queue('first-frame');
+		await new DirectorWorker(store, () => fakeClient()).runOnce();
+		const result = store.apply('alice', project.id, job.id, project.revision, 'image-1');
+		expect(result.shots[0].firstFrameCrop).toBeUndefined();
+	});
+	it('crops a 3:2 source to the requested video ratio and preserves edge selection', () => {
+		expect(cropGeometry(1536, 1024, { ratio: '16:9', x: 50, y: 50, zoom: 1 })).toEqual({
+			sx: 0,
+			sy: 80,
+			sw: 1536,
+			sh: 864,
+			width: 1536,
+			height: 864
+		});
+		expect(cropGeometry(1536, 1024, { ratio: '9:16', x: 100, y: 50, zoom: 1 })).toEqual({
+			sx: 960,
+			sy: 0,
+			sw: 576,
+			sh: 1024,
+			width: 576,
+			height: 1024
+		});
+		expect(cropGeometry(1536, 1024, { ratio: '1:1', x: 0, y: 100, zoom: 2 })).toEqual({
+			sx: 0,
+			sy: 512,
+			sw: 512,
+			sh: 512,
+			width: 512,
+			height: 512
+		});
+	});
 	it('retains moderation diagnostics across reload and never retries a failed generation', async () => {
 		const job = queue();
 		const taskId = randomUUID();
@@ -133,6 +289,17 @@ describe('Director production lifecycle', () => {
 			const result = store.getJob('alice', project.id, job.id);
 			const accepted = store.apply('alice', project.id, job.id, project.revision, 'image-1');
 			expect(isTakeStale(result, accepted)).toBe(false);
+			if (kind === 'first-frame') {
+				accepted.shots[0].firstFrame = 'cropped-image';
+				accepted.shots[0].firstFrameCrop = {
+					sourceFileId: 'image-1',
+					ratio: '16:9',
+					x: 50,
+					y: 50,
+					zoom: 1
+				};
+				expect(isTakeStale(result, accepted)).toBe(false);
+			}
 			accepted.shots[0].dialogue = 'A new line';
 			accepted.shots[0].duration = 7;
 			expect(isTakeStale(result, accepted)).toBe(false);
@@ -160,6 +327,9 @@ describe('Director production lifecycle', () => {
 		};
 		current.shots[0].acceptedTakeId = video.id;
 		expect(isTakeStale(video, current)).toBe(false);
+		current.shots[0].firstFrame = 'cropped-image';
+		expect(isTakeStale(video, current)).toBe(true);
+		current.shots[0].firstFrame = video.snapshot.shots[0].firstFrame;
 		current.shots[0].duration = 9;
 		expect(isTakeStale(video, current)).toBe(true);
 	});
@@ -242,9 +412,12 @@ describe('Director production lifecycle', () => {
 		const worker = new DirectorWorker(store, () => client);
 		await worker.runOnce();
 		clock += 6000;
+		const lastStatus = store.getJob('alice', project.id, job.id).lastStatusAt;
+		expect(lastStatus).toBeTypeOf('number');
 		client.directorVideo.mockRejectedValueOnce(new Error('network'));
 		await worker.runOnce();
 		expect(store.getJob('alice', project.id, job.id).state).toBe('running');
+		expect(store.getJob('alice', project.id, job.id).lastStatusAt).toBe(lastStatus);
 		clock += 6000;
 		await worker.runOnce();
 		expect(store.getJob('alice', project.id, job.id).state).toBe('succeeded');

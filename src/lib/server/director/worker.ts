@@ -114,6 +114,7 @@ export class DirectorWorker {
 						throw new DirectorError('invalid_video_response');
 					job.providerJobId = job.id;
 					job.providerTaskId = videoDiagnostics(result).providerTaskId;
+					job.lastStatusAt = Date.now();
 					job.state = result.state === 'submission-unknown' ? 'submission-unknown' : 'running';
 				} else {
 					const result = await client.createImages({
@@ -152,6 +153,7 @@ export class DirectorWorker {
 					job.fileIds = [fileId];
 				}
 				job.state = result.state as typeof job.state;
+				job.lastStatusAt = Date.now();
 				const diagnostics = videoDiagnostics(result);
 				job.providerTaskId = diagnostics.providerTaskId ?? job.providerTaskId;
 				job.failureCode = diagnostics.failureCode;
