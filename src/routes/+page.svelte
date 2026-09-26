@@ -14,10 +14,9 @@
 	<nav>
 		<a class="brand" href={resolve('/')}>Studio</a><a href={resolve('/agents')}>Agents</a><a
 			href={resolve('/media')}>Media</a
-		><a href={resolve('/flows')}>Flows</a>{#if data.authenticated}<form
-				method="POST"
-				action={resolve('/auth/logout')}
-			>
+		><a href={resolve('/flows')}>Flows</a>{#if data.directorEnabled}<a href={resolve('/director')}
+				>Director</a
+			>{/if}{#if data.authenticated}<form method="POST" action={resolve('/auth/logout')}>
 				<button>Sign out</button>
 			</form>{/if}
 	</nav>

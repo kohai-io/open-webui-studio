@@ -16,7 +16,8 @@
 		"test:integration": "vitest --project server --run",
 		"test": "npm run test:unit -- --run && npm run test:e2e",
 		"test:e2e": "playwright test",
-		"test:e2e:images": "playwright test --config playwright.images.config.ts"
+		"test:e2e:images": "playwright test --config playwright.images.config.ts",
+		"test:e2e:director": "playwright test --config playwright.director.config.ts"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",

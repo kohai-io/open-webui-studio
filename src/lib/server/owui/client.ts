@@ -545,6 +545,38 @@ export class OwuiClient {
 		return { modelId: input.modelId, content, requestId };
 	}
 
+	/** Structured commands are opt-in in the Runway pipe; no chat HTML is parsed. */
+	async directorVideo(
+		modelId: string,
+		command: Record<string, unknown>
+	): Promise<Record<string, unknown>> {
+		if (!modelId || modelId.length > 256 || modelId.includes('://'))
+			throw new TypeError('Invalid model');
+		if (!(await this.listModels()).some((m) => m.id === modelId))
+			throw new OwuiError('not_found', 404, this.nextRequestId());
+		const { response, requestId } = await this.responseWithId('api/chat/completions', {
+			method: 'POST',
+			timeoutMs: 300_000,
+			body: {
+				model: modelId,
+				stream: true,
+				messages: [
+					{ role: 'user', content: JSON.stringify({ studio_director: { ...command, version: 1 } }) }
+				]
+			}
+		});
+		const content = await this.readCompletionStream(response, requestId);
+		let value: unknown;
+		try {
+			value = JSON.parse(content);
+		} catch {
+			throw new OwuiError('invalid_response', 502, requestId);
+		}
+		const result = object(value, requestId);
+		if (result.error) throw new OwuiError('invalid_response', 502, requestId);
+		return result;
+	}
+
 	private async readCompletionStream(
 		response: Response,
 		requestId: string,
