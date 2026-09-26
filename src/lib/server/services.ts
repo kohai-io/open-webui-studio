@@ -12,6 +12,8 @@ import { OidcTransactionStore } from '$lib/server/oidc/transactions';
 import { OwuiClient } from '$lib/server/owui/client';
 import { decodeSessionKey } from '$lib/server/sessions/crypto';
 import { SessionStore } from '$lib/server/sessions/store';
+import { DirectorStore } from '$lib/server/director/store';
+import { DirectorWorker } from '$lib/server/director/worker';
 
 let services:
 	| {
@@ -22,6 +24,8 @@ let services:
 			flowRunner: FlowWorkerRunner;
 			flows: FlowStore;
 			sessions: SessionStore;
+			director: DirectorStore;
+			directorWorker: DirectorWorker;
 			owuiForToken: (token: string) => OwuiClient;
 			owuiPublicUrl: string;
 	  }
@@ -80,7 +84,14 @@ export function getServices() {
 		credentialLeases: flowCredentialLeases,
 		onQueued: () => flowRunner.wake()
 	});
+	const director = new DirectorStore(database, key);
+	const directorWorker = new DirectorWorker(
+		director,
+		(token) => new OwuiClient({ baseUrl: owuiBaseUrl, token })
+	);
 	services = {
+		director,
+		directorWorker,
 		sessions,
 		flowCredentialLeases,
 		flowExecutions,
@@ -98,6 +109,8 @@ export function getServices() {
 		owuiPublicUrl: env.OWUI_PUBLIC_URL ?? owuiBaseUrl
 	};
 	if (env.FLOW_WORKER_ENABLED !== 'false') flowRunner.start();
+	if (env.DIRECTOR_ENABLED === 'true' && env.DIRECTOR_WORKER_ENABLED !== 'false')
+		directorWorker.start();
 	return services;
 }
 

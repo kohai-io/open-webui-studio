@@ -1,5 +1,11 @@
 # Open WebUI Studio
 
+## Director
+
+The optional **Director** workspace provides projects, references, storyboard editing, Assistant proposals, frame generation, Seedance video jobs, take review, sequence preview and production-bundle export. See [Director setup](docs/director-setup.md) for activation and the required update to the existing Runway pipe. It is disabled until `DIRECTOR_ENABLED=true` is configured. Run `npm run test:e2e:director` for the isolated browser workflow.
+
+Use the [stage test guide](docs/director-stage-test.md) to try the current release. The [interaction history and audit plan](docs/director-audit-plan.md) is future work and is not part of the current implementation.
+
 Private companion application for Open WebUI. Studio owns product-specific state for agents, media timelines, and flows while Open WebUI remains authoritative for users, permissions, models, chats, files, and Knowledge.
 
 The initial integration contract is maintained in the adjacent Open WebUI repository at `docs/owui-studio-contract.md`.
