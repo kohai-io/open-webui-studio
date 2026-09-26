@@ -45,6 +45,30 @@ export function validateShot(value: unknown): Shot {
 		shot[key] = text(v[key]);
 	for (const key of ['firstFrame', 'lastFrame', 'acceptedTakeId'] as const)
 		shot[key] = identifier(v[key], true);
+	if (v.firstFrameCrop !== undefined) {
+		const crop = record(v.firstFrameCrop);
+		if (
+			!shot.firstFrame ||
+			!['16:9', '9:16', '1:1'].includes(String(crop.ratio)) ||
+			['x', 'y', 'zoom'].some(
+				(key) => typeof crop[key] !== 'number' || !Number.isFinite(crop[key])
+			) ||
+			Number(crop.x) < 0 ||
+			Number(crop.x) > 100 ||
+			Number(crop.y) < 0 ||
+			Number(crop.y) > 100 ||
+			Number(crop.zoom) < 1 ||
+			Number(crop.zoom) > 3
+		)
+			throw new DirectorError('invalid_frame_crop');
+		shot.firstFrameCrop = {
+			sourceFileId: identifier(crop.sourceFileId),
+			ratio: crop.ratio as '16:9' | '9:16' | '1:1',
+			x: Number(crop.x),
+			y: Number(crop.y),
+			zoom: Number(crop.zoom)
+		};
+	}
 	if (
 		typeof v.duration !== 'number' ||
 		!Number.isInteger(v.duration) ||

@@ -22,7 +22,13 @@ export function isTakeStale(job: Job, project: ProjectDocument): boolean {
 	// Assigning this take's output is acceptance, not a change to its input frame.
 	const adjusted = { ...current };
 	const outputField = kind === 'last-frame' ? 'lastFrame' : 'firstFrame';
-	if (job.fileIds?.includes(adjusted[outputField])) adjusted[outputField] = old[outputField];
+	if (
+		job.fileIds?.includes(adjusted[outputField]) ||
+		(kind === 'first-frame' &&
+			current.firstFrameCrop &&
+			job.fileIds?.includes(current.firstFrameCrop.sourceFileId))
+	)
+		adjusted[outputField] = old[outputField];
 	const frame = (shot: Shot) =>
 		kind === 'last-frame' ? shot.lastFrame || shot.firstFrame : shot.firstFrame;
 	const references = (doc: ProjectDocument, shot: Shot) =>

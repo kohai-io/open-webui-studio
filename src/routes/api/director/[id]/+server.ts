@@ -48,8 +48,12 @@ export const POST: RequestHandler = async ({ locals, params, request, url }) => 
 				...new Set(
 					[
 						...doc.references.map((r) => r.fileId),
-						...doc.shots.flatMap((shot) => [shot.firstFrame, shot.lastFrame])
-					].filter(Boolean)
+						...doc.shots.flatMap((shot) => [
+							shot.firstFrame,
+							shot.lastFrame,
+							shot.firstFrameCrop?.sourceFileId
+						])
+					].filter((id): id is string => Boolean(id))
 				)
 			];
 			for (const id of ids) await client.resolveImages([id], s.owuiUserId);
