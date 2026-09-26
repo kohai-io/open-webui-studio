@@ -1,6 +1,6 @@
 # Director take review workspace
 
-This update gives Takes a large media viewer, a horizontal result strip and a collapsible notes panel. It also adds direct links from Storyboard to the shot's latest result and accepted video. These source changes have not yet been built into a replacement stage image.
+This update gives Takes a large media viewer, a horizontal result strip and a collapsible notes panel. It also adds direct links from Storyboard to the shot's latest result and accepted video. The image has been built, published and deployed by the user to stage; the live checks below passed.
 
 ## Reviewing results
 
@@ -32,3 +32,18 @@ Browser tests use mock providers and a checked-in, synthetic one-second MP4. No 
 Validated on 26 September 2026: 202 integration tests passed, along with the five existing Director browser regressions and the new review scenario. The focused review scenario passed again after the pre-build fix for accepting references and another shot's take from the all-shots view. It verifies the saved selections, reference visibility after reload and return to a populated Storyboard. Type checking reported zero errors and warnings; changed files passed ESLint, Prettier and whitespace checks. Desktop, comparison and 390-pixel mobile layouts were visually inspected. Local screenshots are saved in ignored `data/director-review-workspace.png`, `data/director-review-comparison.png` and `data/director-review-mobile.png`.
 
 Deployment requires a replacement Studio image. No new environment settings or Runway pipe changes are needed. This update does not include synchronized comparison playback, draggable crop handles, shot-form restructuring or the deferred OWUI audit integration.
+
+## Published image and stage verification
+
+Built and published on 26 September 2026 from clean source revision `fba8cebe2c73dce9880d18418fe84541fe14f19b`. This release record was completed after the build. The image includes both the generation controls and this review workspace.
+
+- Tag: `git.theoldschool.house/robert/open-webui-studio:director-review-20260926-222107`.
+- Registry-verified image index digest: `sha256:7c97b2a7ab4cbf238ae3793001ca762ef865780d57f4cb11881e4d903741ec9b`.
+- Platform: `linux/amd64`; runtime user: `studio`.
+- Source manifest SHA-256: `9c3a6cfb7b32eed9e394fd251cb15833658914d8f93ff102684f90faa4f0ae49`.
+- Previous stage image retained for rollback: `sha256:80fd6a1dd88c16b632205729d3424d63a956abbbced5afa365717d8a3565aead`.
+- Local build, registry and smoke-test records are stored in ignored `data/director-review-image-*` files.
+
+An isolated container became healthy, served health and Director with HTTP 200, rejected an invalid-session API request with HTTP 401, initialized all three Director tables and contained the new review UI. Networking and generation workers were disabled during this check.
+
+After the user confirmed deployment to pve2 container 107, the existing kettle project was checked through the stage browser. The frame filter and selection survived reload; comparison, clearing comparison, existing notes, Back to shot and Review latest result worked. The original frame loaded at 1672 × 941 and the accepted video at 1280 × 720 with a duration of 5.056 seconds and no media error. No browser console errors were observed. The project remained at revision 4 with two generation records and zero active jobs; no project changes or new generations were submitted. The running container digest was not independently inspected.

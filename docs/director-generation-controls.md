@@ -2,6 +2,8 @@
 
 This release improves the existing Director workflow without changing the Runway pipe protocol or enabling the deferred audit integration.
 
+The subsequent [take review workspace release](director-review-workspace.md#published-image-and-stage-verification) includes these controls and is now deployed on stage. This document retains the original controls release and its validation record.
+
 ## Generation controls
 
 - A shot cannot submit the same operation again while its existing job is queued, submitting, running, waiting for authentication or awaiting submission reconciliation. This guard is enforced in a database write transaction, including requests from different tabs and requests with different idempotency keys. Changing the shot or project revision does not bypass it.
